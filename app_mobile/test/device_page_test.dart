@@ -67,11 +67,11 @@ void main() {
     await tester.pumpWidget(hostedDevicePage());
 
     stateCtrl.add(BluetoothConnectionState.connected);
-    await tester.pump();
+    await tester.pumpAndSettle();
     expect(find.text('status: connected'), findsOneWidget);
 
     stateCtrl.add(BluetoothConnectionState.disconnected);
-    await tester.pump();
+    await tester.pumpAndSettle();
     expect(find.text('status: disconnected'), findsOneWidget);
   });
 
