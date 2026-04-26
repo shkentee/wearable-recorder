@@ -1,0 +1,34 @@
+# Build artifacts
+build/
+build_*/
+.west/
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Compiled / generated
+*.o
+*.a
+*.elf
+*.bin
+*.hex
+*.uf2
+*.map
+
+# Logs / scratch
+*.log
+out/
+sd.img
+
+# secrets (never commit .env)
+.env
+.env.*
+!.env.example
