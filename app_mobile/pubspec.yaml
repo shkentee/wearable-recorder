@@ -30,5 +30,10 @@ dev_dependencies:
     sdk: flutter
   flutter_lints: ^4.0.0
 
+  # Mocking framework for widget tests. Chosen over mockito because it
+  # is null-safety native (no codegen / build_runner step needed) and
+  # plays nicely with abstract Stream getters on our Wr* wrappers.
+  mocktail: ^1.0.4
+
 flutter:
   uses-material-design: true

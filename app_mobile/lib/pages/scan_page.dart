@@ -9,14 +9,20 @@ import '../services/wr_ble_scanner.dart';
 import 'device_page.dart';
 
 class ScanPage extends StatefulWidget {
-  const ScanPage({super.key});
+  /// [scannerFactory] is an optional dependency-injection seam used by
+  /// widget tests to swap in a fake [WrBleScanner]. Production callers
+  /// (main.dart) leave it null and the page constructs a real scanner.
+  const ScanPage({super.key, this.scannerFactory});
+
+  final WrBleScanner Function()? scannerFactory;
 
   @override
   State<ScanPage> createState() => _ScanPageState();
 }
 
 class _ScanPageState extends State<ScanPage> {
-  final _scanner = WrBleScanner();
+  late final WrBleScanner _scanner =
+      widget.scannerFactory?.call() ?? WrBleScanner();
   StreamSubscription<List<ScanResult>>? _sub;
   List<ScanResult> _results = const [];
   String? _error;
