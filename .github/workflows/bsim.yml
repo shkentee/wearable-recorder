@@ -29,8 +29,9 @@ jobs:
           # device binaries (see https://babblesim.github.io/fetching.html).
           apt-get install -y -qq --no-install-recommends \
             git ca-certificates make gcc g++ gcc-multilib pkg-config \
-            libsdl2-dev libfftw3-dev libffi-dev \
-            python3 python3-pip
+            cmake ninja-build gperf ccache device-tree-compiler \
+            libsdl2-dev libfftw3-dev libffi-dev libmagic1 \
+            python3 python3-pip python3-setuptools python3-wheel
 
       - name: Install west (needed for bsim manifest)
         run: |
