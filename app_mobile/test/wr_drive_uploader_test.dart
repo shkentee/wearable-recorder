@@ -73,12 +73,19 @@ void main() {
           )).thenAnswer((_) async => drive.FileList()..files = []);
 
       // First create() = folder, second create() = uploaded file.
+      // Capture uploadMedia via thenAnswer to avoid the two-captureAny pitfall
+      // (verify with captureAny for a named arg also matches calls that omit
+      // the arg, producing null in the captured list).
       when(() => mockFiles.create(any()))
           .thenAnswer((_) async => drive.File()..id = 'folder-id-123');
+      drive.Media? capturedMedia;
       when(() => mockFiles.create(
             any(),
             uploadMedia: any(named: 'uploadMedia'),
-          )).thenAnswer((_) async => drive.File()..id = 'file-id-abc');
+          )).thenAnswer((inv) async {
+        capturedMedia = inv.namedArguments[#uploadMedia] as drive.Media;
+        return drive.File()..id = 'file-id-abc';
+      });
 
       final dumpFile = await _tempOpusFile();
       final uploader = WrDriveUploader.withApi(mockApi);
@@ -94,16 +101,8 @@ void main() {
             $fields: any(named: r'$fields'),
           )).called(1);
 
-      // Capture the uploadMedia argument and verify MIME type.
-      final captured = verify(
-        () => mockFiles.create(
-          captureAny(),
-          uploadMedia: captureAny(named: 'uploadMedia'),
-        ),
-      ).captured;
-      // captured[0] = drive.File meta, captured[1] = drive.Media
-      final media = captured[1] as drive.Media;
-      expect(media.contentType, 'audio/ogg; codecs=opus');
+      // Verify MIME type from the captured media object.
+      expect(capturedMedia?.contentType, 'audio/ogg; codecs=opus');
     });
 
     // ------------------------------------------------------------------
