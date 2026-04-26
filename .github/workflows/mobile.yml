@@ -169,6 +169,23 @@ jobs:
       - name: Build debug APK
         run: flutter build apk --debug
 
+      - name: Build release APK (unsigned)
+        working-directory: app_mobile
+        # release はデフォルトで debug signing key で署名される (unsigned で
+        # OK)。ProGuard / R8 obfuscation は app size 比較が目的なので最小化
+        # する場合は `--no-shrink` を、しない場合 (デフォルト = shrink あり)
+        # は普通に走らせる。今回は shrink あり (本番想定) で測る。
+        run: flutter build apk --release
+
+      - name: Compare APK sizes
+        working-directory: app_mobile
+        run: |
+          DEBUG=$(stat -c %s build/app/outputs/flutter-apk/app-debug.apk)
+          RELEASE=$(stat -c %s build/app/outputs/flutter-apk/app-release.apk)
+          echo "debug:   $((DEBUG / 1024 / 1024)) MB ($DEBUG bytes)"
+          echo "release: $((RELEASE / 1024 / 1024)) MB ($RELEASE bytes)"
+          echo "shrink ratio: $(awk "BEGIN { printf \"%.1f%%\", (1 - $RELEASE/$DEBUG) * 100 }")"
+
       - name: Show APK size
         run: ls -lh build/app/outputs/flutter-apk/
 
@@ -177,5 +194,12 @@ jobs:
         with:
           name: wearable-recorder-debug-${{ github.sha }}
           path: app_mobile/build/app/outputs/flutter-apk/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wearable-recorder-release-${{ github.sha }}
+          path: app_mobile/build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
           retention-days: 14
