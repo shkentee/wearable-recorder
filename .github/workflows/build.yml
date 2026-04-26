@@ -21,16 +21,23 @@ jobs:
           apt-get install -y -qq --no-install-recommends git ca-certificates
           git --version
 
-      - name: Checkout app + omi submodule
+      - name: Checkout app (without submodules)
         uses: actions/checkout@v4
         with:
-          # 'true' = top-level submodules only (omi). 'recursive' fails because
-          # omi has a broken nested submodule reference under
-          # omiGlass/firmware/.pio/libdeps that's missing from .gitmodules.
-          # Devkit firmware (omi/firmware/devkit) needs no nested submodules
-          # — Opus is vendored as source under src/lib/opus-1.2.1/.
-          submodules: true
+          submodules: false
           path: app
+
+      - name: Init omi submodule manually (no recursion)
+        working-directory: app
+        run: |
+          # actions/checkout's 'submodules: true' still recurses into omi's
+          # internal submodules and trips on a broken reference under
+          # omiGlass/firmware/.pio/libdeps that's missing from .gitmodules.
+          # Devkit firmware doesn't need nested submodules — Opus is vendored
+          # at src/lib/opus-1.2.1/ — so we init only the top level.
+          git config --global --add safe.directory '*'
+          git submodule update --init --depth=1 third_party/omi
+          ls third_party/omi/omi/firmware/devkit/ | head -5
 
       - name: Diagnose container workspace
         run: |
