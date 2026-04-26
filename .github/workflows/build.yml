@@ -75,13 +75,22 @@ jobs:
       - name: Install west and locate Zephyr toolchain
         run: |
           set -e
-          # west via pip user-install (PEP 668 env, --break-system-packages
-          # is unsupported on this older pip).
+          # west + Zephyr build script deps (pyelftools, etc.) via pip user-install.
+          # The older pip in this image rejects --break-system-packages, so use --user.
           python3 -m pip install --quiet --user west
           PIP_BIN="$(python3 -c 'import site; print(site.USER_BASE)')/bin"
           echo "$PIP_BIN" >> "$GITHUB_PATH"
           export PATH="$PIP_BIN:$PATH"
           west --version
+
+          # Zephyr's build-time scripts (gen_kobject_list.py, etc.) need
+          # pyelftools, pykwalify, packaging, etc. Install from Zephyr's
+          # bundled requirements file rather than guessing.
+          if [ -f /workdir/zephyr/scripts/requirements-base.txt ]; then
+            python3 -m pip install --quiet --user -r /workdir/zephyr/scripts/requirements-base.txt
+          else
+            python3 -m pip install --quiet --user pyelftools pykwalify packaging anytree intelhex
+          fi
 
           # Nordic Toolchain Manager installs the Zephyr SDK under a UUID
           # directory like /root/ncs/toolchains/<uuid>/, NOT zephyr-sdk-X.Y.Z.
