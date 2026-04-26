@@ -1,0 +1,42 @@
+diff --git a/omi/firmware/devkit/src/main.c b/omi/firmware/devkit/src/main.c
+--- a/omi/firmware/devkit/src/main.c
++++ b/omi/firmware/devkit/src/main.c
+@@ -21,6 +21,9 @@
+ LOG_MODULE_REGISTER(main, CONFIG_LOG_DEFAULT_LEVEL);
+
++/* Implemented in app/src/wr_msc_mode.c (linked via patch 0002). */
++extern bool wr_msc_mode_is_active(void);
++
+ static void codec_handler(uint8_t *data, size_t len)
+ {
+     int err = broadcast_audio_packets(data, len);
+@@ -267,7 +270,10 @@ int main(void)
+ #endif
+
+-    // Indicate transport initialization
++    /* USB MSC mode: skip recording stack and expose SD via USB. */
++    if (!wr_msc_mode_is_active()) {
++
++    // Recording mode: start transport + codec + mic.
+     LOG_PRINTK("\n");
+     LOG_INF("Initializing transport...\n");
+
+@@ -338,6 +344,15 @@ int main(void)
+     set_led_red(false);
+     set_led_green(false);
+
++    } else {
++        /* MSC mode: 3 × blue blink (0.5 s on / 0.5 s off) then fall through
++         * to the main loop so watchdog_feed() keeps running. */
++        LOG_INF("USB MSC mode active: recording stack disabled.\n");
++        for (int i = 0; i < 3; i++) {
++            set_led_blue(true);
++            k_msleep(500);
++            set_led_blue(false);
++            k_msleep(500);
++        }
++    }
++
+     // Indicate successful initialization
+     LOG_PRINTK("\n");
+     LOG_INF("Device initialized successfully\n");

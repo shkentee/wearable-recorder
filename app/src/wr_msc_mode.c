@@ -25,6 +25,7 @@
 #include <zephyr/init.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/usb/usb_device.h>
 #include <stdbool.h>
 
 #include "wr_msc_mode_logic.h"
@@ -85,6 +86,18 @@ static int wr_msc_mode_boot_detect(void)
 		wr_msc_mode_flag = true;
 		LOG_INF("wr_msc_mode: button held at boot (%d/%d) — MSC MODE",
 			high, WR_MSC_BOOT_SAMPLE_COUNT);
+
+		/* Start USB now so the host sees a mass-storage device.
+		 * CONFIG_USB_DEVICE_INITIALIZE_AT_BOOT=n means we must do
+		 * this manually. With CONFIG_UART_CONSOLE=y, omi's init_usb()
+		 * only sets the status callback (no usb_disable/re-enable), so
+		 * there is no conflict. */
+		int usb_err = usb_enable(NULL);
+		if (usb_err && usb_err != -EALREADY) {
+			LOG_ERR("wr_msc_mode: usb_enable failed (%d)", usb_err);
+		} else {
+			LOG_INF("wr_msc_mode: USB MSC stack started");
+		}
 	} else {
 		LOG_INF("wr_msc_mode: recording mode (%d/%d high)",
 			high, WR_MSC_BOOT_SAMPLE_COUNT);
