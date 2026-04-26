@@ -15,11 +15,24 @@ jobs:
       run:
         shell: bash
     steps:
-      - name: Install git in container (required for actions/checkout submodule support)
+      - name: Install build tools in container
         run: |
+          # The nordicplayground/nrfconnect-sdk:v2.9-branch image ships the
+          # NCS source tree at /workdir/ but does NOT include a usable PATH
+          # entry for west/cmake/ninja/pip — its entry.sh is literally just
+          # 'exec $@'. Pull in the pieces we need via apt.
           apt-get update -qq
-          apt-get install -y -qq --no-install-recommends git ca-certificates
+          apt-get install -y -qq --no-install-recommends \
+            git ca-certificates \
+            python3-pip python3-setuptools python3-wheel \
+            cmake ninja-build gperf ccache \
+            device-tree-compiler dfu-util wget xz-utils file \
+            libsdl2-dev libmagic1
           git --version
+          cmake --version | head -1
+          ninja --version
+          python3 --version
+          python3 -m pip --version
 
       - name: Checkout app (without submodules)
         uses: actions/checkout@v4
@@ -39,53 +52,41 @@ jobs:
           git submodule update --init --depth=1 third_party/omi
           ls third_party/omi/omi/firmware/devkit/ | head -5
 
-      - name: Build firmware (omi devkit, DK1+SPISD)
-        env:
-          WORKDIR: /workdir
+      - name: Install west and locate Zephyr SDK
         run: |
           set -e
+          # west via pip (use --break-system-packages for PEP 668 envs)
+          python3 -m pip install --quiet --break-system-packages west || \
+            python3 -m pip install --quiet --user west
+          # Make sure user-pip bin is on PATH for next steps
+          PIP_BIN="$(python3 -c 'import site,sys; print(site.USER_BASE)')/bin"
+          echo "$PIP_BIN" >> "$GITHUB_PATH"
+          export PATH="$PIP_BIN:$PATH"
+          west --version
 
-          echo "::group::container entry.sh"
-          [ -f /root/entry.sh ] && cat /root/entry.sh || echo "(no /root/entry.sh)"
-          echo "::endgroup::"
-
-          # NordicPlayground container pre-installs NCS at /workdir/ but does
-          # NOT export env vars when the runner overrides the entrypoint.
-          # Source the standard Zephyr env script to get ZEPHYR_BASE/PATH.
-          if [ -f "$WORKDIR/zephyr/zephyr-env.sh" ]; then
-            source "$WORKDIR/zephyr/zephyr-env.sh"
+          # Locate Zephyr SDK (NordicPlayground ships it under /root/ncs/toolchains)
+          SDK_CANDIDATE=$(find /root/ncs/toolchains /opt /workdir -maxdepth 6 -type d -name "zephyr-sdk-*" 2>/dev/null | head -1)
+          if [ -z "$SDK_CANDIDATE" ]; then
+            echo "::group::no Zephyr SDK found, listing toolchain dirs"
+            ls -la /root/ncs/toolchains 2>&1 || true
+            for d in /root/ncs/toolchains/*; do
+              echo "--- $d ---"
+              ls -la "$d" 2>&1 | head -20
+            done
+            echo "::endgroup::"
+            echo "::error::No zephyr-sdk-* dir found"
+            exit 1
           fi
+          echo "ZEPHYR_SDK_INSTALL_DIR=$SDK_CANDIDATE" >> "$GITHUB_ENV"
+          echo "ZEPHYR_TOOLCHAIN_VARIANT=zephyr" >> "$GITHUB_ENV"
+          echo "ZEPHYR_BASE=/workdir/zephyr" >> "$GITHUB_ENV"
+          echo "$SDK_CANDIDATE/arm-zephyr-eabi/bin" >> "$GITHUB_PATH"
+          ls "$SDK_CANDIDATE" | head -10
+          "$SDK_CANDIDATE/arm-zephyr-eabi/bin/arm-zephyr-eabi-gcc" --version | head -1 2>&1 || true
 
-          # west may be installed in a venv that the entry script activates.
-          # Common locations:
-          for venv in /workdir/.venv /opt/venv /root/.venv; do
-            if [ -f "$venv/bin/activate" ]; then
-              source "$venv/bin/activate"
-              echo "activated venv: $venv"
-              break
-            fi
-          done
-
-          # Fallback: install west via pip if still missing.
-          if ! command -v west >/dev/null 2>&1; then
-            echo "west not found, installing via pip"
-            pip3 install --quiet --break-system-packages west || pip3 install --quiet west
-          fi
-
-          # Locate Zephyr SDK toolchain (containers ship it under /root/ncs/toolchains).
-          if [ -z "$ZEPHYR_SDK_INSTALL_DIR" ]; then
-            SDK_CANDIDATE=$(find /root/ncs/toolchains /opt -maxdepth 5 -type d -name "zephyr-sdk-*" 2>/dev/null | head -1)
-            if [ -n "$SDK_CANDIDATE" ]; then
-              export ZEPHYR_SDK_INSTALL_DIR="$SDK_CANDIDATE"
-            fi
-          fi
-          export ZEPHYR_TOOLCHAIN_VARIANT="${ZEPHYR_TOOLCHAIN_VARIANT:-zephyr}"
-
-          # Make sure the SDK's gcc is on PATH for fallback diagnostics.
-          if [ -n "$ZEPHYR_SDK_INSTALL_DIR" ]; then
-            export PATH="$ZEPHYR_SDK_INSTALL_DIR/arm-zephyr-eabi/bin:$PATH"
-          fi
-
+      - name: Build firmware (omi devkit, DK1+SPISD)
+        run: |
+          set -e
           echo "::group::resolved env"
           echo "ZEPHYR_BASE=$ZEPHYR_BASE"
           echo "ZEPHYR_TOOLCHAIN_VARIANT=$ZEPHYR_TOOLCHAIN_VARIANT"
@@ -95,22 +96,16 @@ jobs:
           arm-zephyr-eabi-gcc --version 2>&1 | head -1 || true
           echo "::endgroup::"
 
-          if [ -z "$ZEPHYR_BASE" ]; then
-            echo "::error::ZEPHYR_BASE still empty after env setup" >&2
-            exit 1
-          fi
-
-          # Build from the pre-fetched workspace so west finds the manifest.
-          WORKSPACE_ROOT="$(dirname "$ZEPHYR_BASE")"
-          echo "Using workspace at $WORKSPACE_ROOT"
-          cd "$WORKSPACE_ROOT"
+          # Build from /workdir (the pre-fetched NCS workspace) so west picks
+          # up the existing manifest. The devkit lives in our checked-out repo.
+          cd /workdir
           west build \
             -b xiao_ble/nrf52840/sense \
             -p always \
             "$GITHUB_WORKSPACE/app/third_party/omi/omi/firmware/devkit" \
             -- -DCONF_FILE=prj_xiao_ble_sense_devkitv1-spisd.conf
           ls -la build/zephyr/ | head -20
-          echo "BUILD_DIR=$WORKSPACE_ROOT/build" >> "$GITHUB_ENV"
+          echo "BUILD_DIR=/workdir/build" >> "$GITHUB_ENV"
 
       - name: Convert hex to UF2 (XIAO BLE bootloader, family 0xADA52840)
         run: |
