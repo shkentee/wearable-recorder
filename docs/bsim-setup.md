@@ -42,13 +42,21 @@ without burning real-device time.
 
 The workflow:
 
-1. Pulls deps via apt (`libsdl2-dev`, `libfftw3-dev`, etc.)
-2. Clones `babblesim-manifest`, runs `west update` + `make everything`
-3. Builds and runs **one** Zephyr-bundled bsim test as a smoke check
-   (`tests/bsim/bluetooth/host/adv/encrypted/css_sample_data` for v3.6)
+1. Pulls deps via apt (`libsdl2-dev`, `libfftw3-dev`, `cmake`,
+   `gcc-multilib`, etc.)
+2. Clones `bsim_west`, runs `west update` + `make -f
+   components/common/Makefile everything`
+3. Smoke-tests the install by invoking `-help` on each shipped bsim
+   binary (`bs_2G4_phy_v1`, `bs_device_handbrake`, etc.)
 
 A green run proves the install + execution loop works. We can flip the
 trigger to `push` later once it's stable.
+
+> **Why only `-help` smoke?** Compiling a Zephyr-bundled bsim test under
+> NCS pulls in `nrfxlib/softdevice_controller`, which CMake-rejects the
+> `nrf52_bsim` SoC + float ABI combo. Picking the right controller
+> (`CONFIG_BT_LL_SW_SPLIT=y`, suppressing the SoftDevice for this
+> target) is Phase 6 plumbing — see `tests/bsim/wr_*/` once it lands.
 
 ## Board target
 
