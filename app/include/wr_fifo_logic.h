@@ -38,4 +38,25 @@ bool wr_fifo_is_managed_chunk(const char *name, const char *active_name);
  */
 int wr_fifo_compare_chunk(const char *a, const char *b);
 
+/* Identify the filename type for ordering decisions. */
+typedef enum {
+	WR_FIFO_KIND_UNKNOWN = 0,    /* not a managed file, ignore */
+	WR_FIFO_KIND_LEGACY,         /* chunk_NNNNN.opus (Phase 4-2 sequential) */
+	WR_FIFO_KIND_UNSYNCED,       /* unsynced_<bootid8hex>_<seq5>.opus */
+	WR_FIFO_KIND_EPOCH,          /* <10digit_unix_secs>.opus */
+} wr_fifo_kind_t;
+
+/* Classify a filename (basename only) into one of the wr_fifo_kind_t
+ * buckets. NULL or empty input returns WR_FIFO_KIND_UNKNOWN. Any name
+ * that does not match a managed pattern returns UNKNOWN and should be
+ * skipped by the caller.
+ */
+wr_fifo_kind_t wr_fifo_classify(const char *name);
+
+/* Total order across kinds: LEGACY < UNSYNCED < EPOCH (oldest first
+ * within each kind by string compare). Returns negative if a older,
+ * positive if b older, zero if equal. NULL-safe.
+ */
+int wr_fifo_compare_priority(const char *a, const char *b);
+
 #endif /* WR_FIFO_LOGIC_H */

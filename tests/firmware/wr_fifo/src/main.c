@@ -125,3 +125,157 @@ ZTEST(wr_fifo_logic, test_compare_null_safe)
 	zassert_true(wr_fifo_compare_chunk(NULL, "x") > 0, "NULL > anything");
 	zassert_true(wr_fifo_compare_chunk("x", NULL) < 0, "anything < NULL");
 }
+
+/* ========================================================================== */
+/* wr_fifo_classify (Phase 6)                                                  */
+/* ========================================================================== */
+
+ZTEST(wr_fifo_logic, test_classify_legacy_chunk)
+{
+	zassert_equal(wr_fifo_classify("chunk_00001.opus"),
+		      WR_FIFO_KIND_LEGACY,
+		      "chunk_NNNNN.opus is LEGACY");
+	zassert_equal(wr_fifo_classify("chunk_99999.opus"),
+		      WR_FIFO_KIND_LEGACY,
+		      "high seq chunk_*.opus is still LEGACY");
+}
+
+ZTEST(wr_fifo_logic, test_classify_unsynced)
+{
+	zassert_equal(wr_fifo_classify("unsynced_0a1b2c3d_00001.opus"),
+		      WR_FIFO_KIND_UNSYNCED,
+		      "unsynced_<bootid>_<seq>.opus is UNSYNCED");
+	zassert_equal(wr_fifo_classify("unsynced_ffffffff_99999.opus"),
+		      WR_FIFO_KIND_UNSYNCED,
+		      "max boot_id/seq still UNSYNCED");
+}
+
+ZTEST(wr_fifo_logic, test_classify_epoch_typical)
+{
+	zassert_equal(wr_fifo_classify("1234567890.opus"),
+		      WR_FIFO_KIND_EPOCH,
+		      "10-digit unix-secs is EPOCH");
+}
+
+ZTEST(wr_fifo_logic, test_classify_epoch_zero)
+{
+	zassert_equal(wr_fifo_classify("0000000000.opus"),
+		      WR_FIFO_KIND_EPOCH,
+		      "zero-padded 10-digit zero is EPOCH");
+}
+
+ZTEST(wr_fifo_logic, test_classify_epoch_max)
+{
+	zassert_equal(wr_fifo_classify("9999999999.opus"),
+		      WR_FIFO_KIND_EPOCH,
+		      "10-digit max is EPOCH");
+}
+
+ZTEST(wr_fifo_logic, test_classify_short_digits_unknown)
+{
+	zassert_equal(wr_fifo_classify("123456789.opus"),
+		      WR_FIFO_KIND_UNKNOWN,
+		      "9 digits does not match epoch format");
+	zassert_equal(wr_fifo_classify("12345678901.opus"),
+		      WR_FIFO_KIND_UNKNOWN,
+		      "11 digits does not match epoch format");
+}
+
+ZTEST(wr_fifo_logic, test_classify_garbage_unknown)
+{
+	zassert_equal(wr_fifo_classify("abc.opus"),
+		      WR_FIFO_KIND_UNKNOWN,
+		      "non-digit basename is UNKNOWN");
+	zassert_equal(wr_fifo_classify("readme.txt"),
+		      WR_FIFO_KIND_UNKNOWN,
+		      "foreign file is UNKNOWN");
+	zassert_equal(wr_fifo_classify("123456789a.opus"),
+		      WR_FIFO_KIND_UNKNOWN,
+		      "10 chars but not all digits is UNKNOWN");
+}
+
+ZTEST(wr_fifo_logic, test_classify_chunkfoo_unknown)
+{
+	zassert_equal(wr_fifo_classify("chunkfoo.opus"),
+		      WR_FIFO_KIND_UNKNOWN,
+		      "chunkfoo (no underscore) is not LEGACY");
+}
+
+ZTEST(wr_fifo_logic, test_classify_null_and_empty)
+{
+	zassert_equal(wr_fifo_classify(NULL), WR_FIFO_KIND_UNKNOWN,
+		      "NULL is UNKNOWN");
+	zassert_equal(wr_fifo_classify(""), WR_FIFO_KIND_UNKNOWN,
+		      "empty string is UNKNOWN");
+}
+
+/* ========================================================================== */
+/* wr_fifo_compare_priority (Phase 6)                                          */
+/* ========================================================================== */
+
+ZTEST(wr_fifo_logic, test_compare_priority_legacy_vs_legacy)
+{
+	zassert_true(wr_fifo_compare_priority("chunk_00001.opus",
+					      "chunk_00002.opus") < 0,
+		     "within LEGACY, lower seq is older");
+	zassert_true(wr_fifo_compare_priority("chunk_00010.opus",
+					      "chunk_00002.opus") > 0,
+		     "within LEGACY, higher seq is newer");
+}
+
+ZTEST(wr_fifo_logic, test_compare_priority_unsynced_vs_unsynced)
+{
+	zassert_true(wr_fifo_compare_priority("unsynced_0a1b2c3d_00001.opus",
+					      "unsynced_0a1b2c3d_00002.opus") < 0,
+		     "within UNSYNCED, lower seq is older (same boot_id)");
+}
+
+ZTEST(wr_fifo_logic, test_compare_priority_epoch_vs_epoch)
+{
+	zassert_true(wr_fifo_compare_priority("1234567890.opus",
+					      "1234567899.opus") < 0,
+		     "within EPOCH, smaller unix-secs is older");
+	zassert_true(wr_fifo_compare_priority("0000000001.opus",
+					      "9999999999.opus") < 0,
+		     "EPOCH zero vs max — zero older");
+}
+
+ZTEST(wr_fifo_logic, test_compare_priority_legacy_before_unsynced)
+{
+	zassert_true(wr_fifo_compare_priority("chunk_99999.opus",
+					      "unsynced_00000000_00000.opus") < 0,
+		     "LEGACY always deleted before UNSYNCED");
+	zassert_true(wr_fifo_compare_priority("unsynced_00000000_00000.opus",
+					      "chunk_99999.opus") > 0,
+		     "symmetric: UNSYNCED is newer than any LEGACY");
+}
+
+ZTEST(wr_fifo_logic, test_compare_priority_legacy_before_epoch)
+{
+	zassert_true(wr_fifo_compare_priority("chunk_99999.opus",
+					      "1234567890.opus") < 0,
+		     "LEGACY always deleted before EPOCH");
+	zassert_true(wr_fifo_compare_priority("9999999999.opus",
+					      "chunk_00001.opus") > 0,
+		     "symmetric: EPOCH is newer than any LEGACY");
+}
+
+ZTEST(wr_fifo_logic, test_compare_priority_unsynced_before_epoch)
+{
+	zassert_true(wr_fifo_compare_priority("unsynced_ffffffff_99999.opus",
+					      "0000000000.opus") < 0,
+		     "UNSYNCED always deleted before EPOCH (no real timestamp)");
+	zassert_true(wr_fifo_compare_priority("9999999999.opus",
+					      "unsynced_00000000_00000.opus") > 0,
+		     "symmetric: EPOCH is newer than any UNSYNCED");
+}
+
+ZTEST(wr_fifo_logic, test_compare_priority_null_safe)
+{
+	zassert_equal(wr_fifo_compare_priority(NULL, NULL), 0,
+		      "both NULL → 0");
+	zassert_true(wr_fifo_compare_priority(NULL, "chunk_00001.opus") > 0,
+		     "NULL > anything (sorts last, never deleted)");
+	zassert_true(wr_fifo_compare_priority("chunk_00001.opus", NULL) < 0,
+		     "anything < NULL");
+}

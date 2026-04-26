@@ -54,10 +54,18 @@ static bool wr_fifo_find_oldest(char *oldest_name, size_t name_size)
 		if (ent.type == FS_DIR_ENTRY_DIR) {
 			continue;
 		}
-		if (!wr_fifo_is_managed_chunk(ent.name, WR_FIFO_ACTIVE_NAME)) {
+		/* Skip the active recording file regardless of kind. */
+		if (strcmp(ent.name, WR_FIFO_ACTIVE_NAME) == 0) {
 			continue;
 		}
-		if (!found || wr_fifo_compare_chunk(ent.name, oldest_name) < 0) {
+		/* Phase 6: classify into LEGACY / UNSYNCED / EPOCH; UNKNOWN
+		 * (foreign files) is skipped. Priority order ensures legacy
+		 * chunk_*.opus is purged first, then unsynced pre-time-sync
+		 * names, and only then real epoch-named chunks. */
+		if (wr_fifo_classify(ent.name) == WR_FIFO_KIND_UNKNOWN) {
+			continue;
+		}
+		if (!found || wr_fifo_compare_priority(ent.name, oldest_name) < 0) {
 			strncpy(oldest_name, ent.name, name_size - 1);
 			oldest_name[name_size - 1] = '\0';
 			found = true;
