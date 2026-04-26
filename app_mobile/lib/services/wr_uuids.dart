@@ -3,7 +3,6 @@
 /// Mirrored from `third_party/omi/omi/firmware/devkit/src/transport.c`
 /// (see also docs/phase6-plan-draft.md §3) so the mobile client can
 /// filter / subscribe without depending on the omi Flutter app.
-
 class WrUuids {
   // Audio service.
   static const String audioService = '19b10000-e8f2-537e-4f6c-d104768a1214';
