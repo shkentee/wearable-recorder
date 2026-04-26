@@ -31,6 +31,12 @@ static const struct bt_data ad[] = {
 static void ccc_cfg_changed(const struct bt_gatt_attr *attr, uint16_t value)
 {
 	bs_trace_info_time(1, "peripheral: CCC changed -> 0x%04x\n", value);
+	/* Fire the notify only once the central has actually subscribed
+	 * (CCC value bit BT_GATT_CCC_NOTIFY set). Otherwise bt_gatt_notify
+	 * returns -EINVAL with the "Device is not subscribed" warning. */
+	if ((value & BT_GATT_CCC_NOTIFY) != 0) {
+		k_work_schedule(&notify_work, K_MSEC(20));
+	}
 }
 
 BT_GATT_SERVICE_DEFINE(audio_svc,
@@ -73,9 +79,9 @@ static void peripheral_connected(struct bt_conn *conn, uint8_t err)
 	bs_trace_info_time(1, "peripheral: connected\n");
 	peer_conn = bt_conn_ref(conn);
 	SET_FLAG(flag_peer_connected);
-	/* Give the central some breathing room to discover + subscribe
-	 * before we fire the notify. 200 ms of simulated time is plenty. */
-	k_work_schedule(&notify_work, K_MSEC(200));
+	/* Don't notify yet — wait for the central to write the CCC
+	 * descriptor, which fires ccc_cfg_changed and schedules the
+	 * notify_work. Race-free even on bsim's compressed clock. */
 }
 
 static void peripheral_disconnected(struct bt_conn *conn, uint8_t reason)
