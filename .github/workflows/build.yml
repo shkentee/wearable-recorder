@@ -72,6 +72,23 @@ jobs:
             echo "$CONF already uses CONFIG_OMI_ENABLE_OFFLINE_STORAGE (or symbol absent), no patch needed"
           fi
 
+      - name: Apply kenta patches to omi sources (Phase 4 modifications)
+        working-directory: third_party/omi
+        run: |
+          # Each *.patch file under app/patches/ is applied in lexical order.
+          # Patches contain the kenta modifications that aren't kept in omi
+          # itself (we don't fork) — Plan B always-write SD, etc.
+          set -e
+          shopt -s nullglob
+          for p in "$GITHUB_WORKSPACE"/app/patches/*.patch; do
+            echo "::group::applying $(basename "$p")"
+            git apply --check "$p"
+            git apply "$p"
+            echo "::endgroup::"
+          done
+          echo "applied patches:"
+          ls "$GITHUB_WORKSPACE"/app/patches/*.patch 2>/dev/null | xargs -n1 basename || echo "(none)"
+
       - name: Install west and locate Zephyr toolchain
         run: |
           set -e
