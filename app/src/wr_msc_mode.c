@@ -27,6 +27,8 @@
 #include <zephyr/logging/log.h>
 #include <stdbool.h>
 
+#include "wr_msc_mode_logic.h"
+
 LOG_MODULE_REGISTER(wr_msc_mode, CONFIG_LOG_DEFAULT_LEVEL);
 
 #define WR_MSC_BOOT_PIN_OUT 4   /* D4 */
@@ -78,7 +80,8 @@ static int wr_msc_mode_boot_detect(void)
 		k_msleep(WR_MSC_BOOT_SAMPLE_MS);
 	}
 
-	if (high >= WR_MSC_BOOT_HIGH_THRESHOLD) {
+	if (wr_msc_mode_decide(high, WR_MSC_BOOT_SAMPLE_COUNT,
+			       WR_MSC_BOOT_HIGH_THRESHOLD)) {
 		wr_msc_mode_flag = true;
 		LOG_INF("wr_msc_mode: button held at boot (%d/%d) — MSC MODE",
 			high, WR_MSC_BOOT_SAMPLE_COUNT);
