@@ -27,6 +27,10 @@ static uint32_t notify_received_count;
 static struct bt_gatt_discover_params discover_params;
 static struct bt_gatt_subscribe_params sub_params;
 
+/* Expected trailing bytes after the LE16 seq id: frame=0x00 + dummy 'ABCD'. */
+static const uint8_t expected_tail[] = { 0x00, 'A', 'B', 'C', 'D' };
+#define WR_LINK_PROBE_PAYLOAD_LEN 7  /* 2 (seq LE16) + 1 (frame) + 4 (dummy) */
+
 static uint8_t notify_cb(struct bt_conn *conn,
 			 struct bt_gatt_subscribe_params *params,
 			 const void *data, uint16_t length)
@@ -37,12 +41,36 @@ static uint8_t notify_cb(struct bt_conn *conn,
 		bs_trace_info_time(1, "central: subscription tore down\n");
 		return BT_GATT_ITER_STOP;
 	}
+
+	/* Verify length before accessing bytes. */
+	if (length != WR_LINK_PROBE_PAYLOAD_LEN) {
+		FAIL("central: notify length %u != expected %u\n",
+		     (unsigned)length, WR_LINK_PROBE_PAYLOAD_LEN);
+		return BT_GATT_ITER_STOP;
+	}
+
+	const uint8_t *p = data;
+	uint16_t seq_id = (uint16_t)(p[0] | (p[1] << 8));
+	uint16_t expected_seq = (uint16_t)notify_received_count;
+
 	notify_received_count++;
+
+	/* Verify sequence id matches send order. */
+	if (seq_id != expected_seq) {
+		FAIL("central: notify seq=%u expected=%u\n",
+		     seq_id, expected_seq);
+		return BT_GATT_ITER_STOP;
+	}
+
+	/* Verify trailing sentinel bytes are intact. */
+	if (memcmp(&p[2], expected_tail, sizeof(expected_tail)) != 0) {
+		FAIL("central: notify #%u payload bytes corrupted\n", seq_id);
+		return BT_GATT_ITER_STOP;
+	}
+
 	bs_trace_info_time(1,
-		"central: notify #%u received (%u bytes, total=%u)\n",
-		(length >= 2 ? ((const uint8_t *)data)[0] |
-			       ((const uint8_t *)data)[1] << 8 : 0),
-		(unsigned)length, notify_received_count);
+		"central: notify seq=%u OK (%u bytes, total=%u)\n",
+		seq_id, (unsigned)length, notify_received_count);
 
 	if (notify_received_count >= WR_LINK_EXPECT_NOTIFY_COUNT) {
 		SET_FLAG(flag_notify_received);
