@@ -25,9 +25,9 @@
 | D4 | SD: Plan B（常時書き込み） | ✅ Phase 4-1（pusher() ファンアウト patch 適用済。実機ジッター測定は Phase 5）|
 | D5 | バッテリー: 200mAh一本 | ⏳ 実機調達 Phase 5 |
 | D6 | チャンク: 10分/file | ✅ Phase 4-2 + 4-6+（純化 + ztest。サイズ閾値は wr_chunk_logic 実装済、Phase 6 で配線）|
-| D7 | ファイル名: `<UNIX_epoch>.opus` / 未同期時 `unsynced_<bootid>_<seq>.opus` | 🟡 Phase 4-6+（純化ロジック + ztest 済。`performSyncTime()` 連動は Phase 6）|
-| D8 | FIFO: 空き10%以下で最古から削除 | ✅ Phase 4-3 + 4-6+（純化 + ztest）|
-| D9 | USB MSC: ボタン長押し起動でMSCモード | 🟡 Phase 4-4 + 4-6+（純化 + ztest 済。`usb_enable()` runtime mode-switch は Phase 5 実機後）|
+| D7 | ファイル名: `<UNIX_epoch>.opus` / 未同期時 `unsynced_<bootid>_<seq>.opus` | 🟡 Phase 4-6+ + Phase 6（純化ロジック + ztest + 3-kind 判別 / 削除順 OK。`performSyncTime()` 後のファイル生成パス配線のみ Phase 6 後半）|
+| D8 | FIFO: 空き10%以下で最古から削除 | ✅ Phase 4-3 + 4-6+ + Phase 6（純化 + ztest + LEGACY/UNSYNCED/EPOCH classify + 削除優先度総順序、計 18 ztest 追加）|
+| D9 | USB MSC: ボタン長押し起動でMSCモード | 🟡 Phase 4-4 + 4-6+ + Phase 6（純化 + runtime-mode 述語 + chunk/fifo の MSC short-circuit 配線済 + 13 ztest。`usb_enable()` 実呼び出しのみ Phase 5 実機後）|
 | D10 | Opus: 32kbps（omi標準）| ✅ |
 | D11 | DTX: 0（無効、omi標準）| ✅ |
 | D12 | 時刻同期: omi `performSyncTime()` | ✅ |
@@ -744,9 +744,9 @@ adafruit-nrfutil dfu genpkg \
 | サブタスク | 仕様書参照 | 実装ファイル | 状態 | MVP 残作業 |
 |---|---|---|---|---|
 | 4-1 Plan B（常時SD書き込み）| §6.3 | `app/patches/0001-plan-b-fanout-tx-queue.patch` | ✅ 完了 | Phase 5 で実機検証（pusher() の SD 書き込み遅延 / ジッター測定）|
-| 4-2 チャンクローテーション | §7.2 | `app/src/wr_chunk.c` | 🟡 MVP | UNIX_epoch 命名 / boot ID / `unsynced_<bootid>_<seq>` / サイズ閾値ベースのロテーションを Phase 6 で本格実装 |
-| 4-3 FIFO 自動削除 | §6.4 | `app/src/wr_fifo.c` | ✅ 完了 | なし（実機 SD で寿命確認は Phase 5）|
-| 4-4 USB Mass Storage | §6.5 | `app/src/wr_msc_mode.c` + `app/overlay/spisd-fixup.conf` | 🟡 MVP | 起動時のボタン長押し検出のみ完了。`usb_enable()` での MSC モード起動と録音 short-circuit を Phase 5 で追加 |
+| 4-2 チャンクローテーション | §7.2 | `app/src/wr_chunk.c` + `wr_chunk_logic.c` | 🟡 MVP | 純粋ロジックは epoch / boot ID / unsynced / サイズ閾値まで完成（§22.3）。`performSyncTime()` 後のファイル生成パスへの配線のみ Phase 6 後半 |
+| 4-3 FIFO 自動削除 | §6.4 | `app/src/wr_fifo.c` + `wr_fifo_logic.c` | ✅ 完了 | LEGACY/UNSYNCED/EPOCH 3-kind 削除順 + MSC short-circuit 済（§22.7 / §22.8）|
+| 4-4 USB Mass Storage | §6.5 | `app/src/wr_msc_mode.c` + `wr_msc_mode_logic.c` + `app/overlay/spisd-fixup.conf` | 🟡 MVP | 起動時長押し検出 + runtime-mode 述語 + chunk/fifo short-circuit 完了（§22.8）。`usb_enable()` 実呼び出しのみ Phase 5 実機後 |
 | 4-5 LED 状態マシン | §11.2, §12 | `app/src/wr_led_status.c` | ✅ 完了 | バッテリー ADC 読み取りフックは Phase 5（実機 + ハードウェア依存）|
 
 ### 22.1 メモリ予算（Phase 4 完了時点）
@@ -844,23 +844,135 @@ D17（自前ミニマルスマホアプリ）の雛形に着手。Phase 6 本体
 
 ---
 
-### 22.6 関連ファイル
+### 22.6 Phase 5+ bsim: `wr_smoke` を bs_2G4_phy_v1 で実走 + `wr_link` 2-device GATT verdict
+
+§22.4 の段階では bsim binary の `-help` 起動確認止まりだった bsim CI を、**実際に Zephyr アプリを `bs_2G4_phy_v1` 上で走らせる** ところまで前進させた。さらに後続コミットで **2 デバイス（peripheral + central）の GATT 接続 verdict** まで拡張。
+
+**成果物（5 段階構成の bsim CI）**
+1. bsim binary `-help`（基底環境チェック）
+2. `tests/bsim/wr_smoke/test_scripts/_env.sh` / `_compile.sh` / `run_smoke.sh`（Zephyr v3.6 bsim 慣例。`west build` で `nrf52_bsim` ビルド → `zephyr.exe`/`.elf` を `${BSIM_OUT_PATH}/bin` に test-id 名でコピー、device + `phy_2G4_v1` で起動 / 60s wall-clock cap、sim 時間は約5秒）
+3. `wr_smoke` run（1 デバイス smoke、上記スクリプトで verdict）
+4. `tests/bsim/wr_link/`（**同一バイナリが `bs_tests -testid` で peripheral / central どちらにも切り替わる**: peripheral は omi audio service UUID を advertise → 接続受領で PASS、central は scan → connect で PASS。`bs_tests` 標準フレームワーク（`test_post_init_f` / `test_tick_f` / `test_main_f`）+ 15s sim-time timeout で fail 化、`CONFIG_BT_LL_SW_SPLIT` で nrfxlib SoftDevice を gating）
+5. `wr_link` run（2 デバイス、90s wall-clock cap = 15s sim + 2 デバイスビルドの slack）
+
+**コミット**: `a7f3370`（`Phase 5+ bsim: actually run wr_smoke under bs_2G4_phy_v1`）、`eff39bb`（`Phase 5+ bsim wr_link: 2-device peripheral+central GATT link verdict`）
+
+**制約**:
+- `nrfxlib/softdevice_controller` の float ABI 制約は引き続き存在 → `CONFIG_BT_LL_SW_SPLIT=y` でゲート（`wr_smoke` / `wr_link` 共通）
+- 実機との等価性は **未保証**（bsim はロジック検証専用。電力 / ラジオ実物特性は PPK2 + 実機のみ）
+
+---
+
+### 22.7 Phase 6: `wr_fifo classify` + LEGACY/UNSYNCED/EPOCH の削除優先度
+
+D8 の最古削除は §22.3 までフラット strcmp ベースだったが、Phase 6 の 3 種類のファイル名スキーマ（連番 `chunk_NNNNN.opus` / `unsynced_<bootid8hex>_<seq5>.opus` / `<10digit_unix_secs>.opus`）が並存すると、ASCII 順では `'0'..'9' < 'a'..'z'` なので **新しく書かれた EPOCH ファイルが古い legacy/unsynced より先に消される** バグになる。これを総順序つき `classify` + `compare_priority` に置き換えた。
+
+**成果物**
+- `app/include/wr_fifo_logic.h` に `wr_fifo_kind_t { LEGACY, UNSYNCED, EPOCH, UNKNOWN }` 追加
+- `wr_fifo_classify(name)` 純関数（EPOCH は **必ず 10 進 10 桁 + ".opus"** を要求）
+- `wr_fifo_compare_priority(a, b)` 純関数（**LEGACY < UNSYNCED < EPOCH** の総順序、同 kind 内は strcmp で creation 順）
+- `wr_fifo_find_oldest()` を `classify`（UNKNOWN は skip）+ `compare_priority` ベースに差し替え。録音中ファイルの skip は引き続き strcmp で先に弾く
+- 旧 `wr_fifo_is_managed_chunk` / `wr_fifo_compare_chunk` は backward compat で温存
+
+**テスト**: `tests/firmware/wr_fifo/src/main.c` に **18 ztest 追加**
+- 9 本: `wr_fifo_classify`（LEGACY / UNSYNCED / EPOCH ×3 / 桁数違い / garbage / `chunkfoo` / NULL / 空文字）
+- 9 本: `wr_fifo_compare_priority`（同 kind 内 ×3 / kind 間 ×3 + 対称性チェック / NULL safety）
+
+**コミット**: `9620dcb`（`Phase 6: wr_fifo classify + priority order across legacy/unsynced/epoch filenames`）
+
+**制約**: 純粋ロジック完成。実機 SD 上での long-run 削除挙動は Phase 5 で検証。
+
+---
+
+### 22.8 Phase 6: `wr_msc` runtime-mode decision + chunk/fifo short-circuit
+
+「起動時に MSC モードに入ったら録音系を止める」分岐を、各サブシステムが個別に再導出するのをやめて `wr_msc_mode_logic` に集約。chunk rotation と FIFO prune の **MSC 競合（fs_rename / fs_unlink が USB MSC スタックと FAT を同時に触るレース）** を予防する短絡が入る。
+
+**成果物**
+- `app/include/wr_msc_mode_logic.h`:
+  - `wr_msc_runtime_mode_t { RECORDING, USB_MSC }` + `wr_msc_runtime_mode(boot_flag)`
+  - 述語群（すべて純関数）:
+    - `wr_msc_should_suppress_recording(mode)`
+    - `wr_msc_should_enable_usb_msc(mode)`
+    - `wr_msc_should_enable_chunk_rotation(mode)`
+    - `wr_msc_should_enable_fifo_pruning(mode)`
+  - `wr_msc_led_hint_for(mode)`（MSC 時は **slow_blue_blink** ヒント）
+- `app/src/wr_chunk.c::wr_chunk_rotate()`: MSC モード中は no-op + `LOG_INF`（fs_rename を打たない）
+- `app/src/wr_fifo.c::wr_fifo_check()`: MSC モード中は no-op + `LOG_INF`（fs_unlink を打たない）
+- `wr_msc_mode.c` 自体は変更なし（`usb_enable()` の実発行は引き続き Phase 5 実機後）
+- 述語呼び出しは `wr_msc_mode_is_active()` の forward extern 経由（公開ヘッダ依存を増やさない）
+
+**テスト**: `tests/firmware/wr_msc_mode/src/main.c` に **13 ztest 追加**（両 mode × 各述語 / LED ヒント / round-trip composition）
+
+**コミット**: `fd7fb4e`（`Phase 6: wr_msc runtime-mode decision + chunk/fifo MSC short-circuit`）
+
+**制約**: `usb_enable()` の実呼び出しは Phase 5 実機 bring-up 後。LED 配線（`slow_blue_blink` ヒントを `wr_led_pick` に流す）も同時期。
+
+---
+
+### 22.9 PC 側ツール `tools/decode-dump.py` + `tools/power-predict.py` + `tools` CI
+
+Phase 6 後半（Whisper パイプライン）+ Phase 5 実機電力検算に向けた PC 側スクリプト群と専用 CI を追加。
+
+**成果物 1: `tools/decode-dump.py`**
+
+`app_mobile/lib/services/wr_packet_sink.dart` が吐くバイナリ dump（**3-byte omi header + Opus payload を verbatim で連結、長さ prefix なし**）を PC 側で復号する stdlib-only ツール。
+
+- パケット境界は **次の expected-successor header**（`packet_id + 1`, `frame_id == 0`）でスキャン、BLE 再接続による不連続は bounded-jump フォールバック
+- 出力: `<prefix>.json`（`{packet_id, frame_id, payload_hex, offset_in_file, payload_len}` の manifest）+ `<prefix>.opus`（header を剥いだ raw Opus 連結）
+- `--wav` は best-effort（実行時に `pyogg` / `opuslib` を try import、ハード依存にしない）
+- 不連続（packet_id ジャンプ / frame_id 欠け）は INFO ログで surface
+- `tools/test_decode_dump.py`: **7 pytest**（happy path / 出力ファイル生成 / 1 packet_id 内マルチフレーム / 非単調 packet_id 検出 / 空入力 / warn-default と `strict=True`）
+
+**成果物 2: `tools/power-predict.py`**
+
+§14.2 の電力見積もり（3.2-3.7 mA → 200 mAh で 54-63 h）を **CLI で再現 + what-if 検証** できる pre-Phase-5 リファレンスモデル。PPK2 到着前に「バッテリー違い / 録音 duty 違い / BLE オーバーヘッド違い」の効きを試せる。
+
+- pure-stdlib（`argparse` / `json` / `dataclasses` / `math`、PyYAML 不要）
+- モデル: `avg = (pdm+codec+ble)*record_duty + sd*sd_duty + led + mcu_idle*(1-record_duty)`
+- デフォルト出力: **3.71 mA / 53.9 h / 2.25 days**（§14.2 と一致）
+- `--fail-under-target` で CI ガード化可能（デフォルト OFF）、`--target-hours` で §14.3 の 20h ベースラインを上書き
+- `tools/test_power_predict.py`: **10 pytest**（spec デフォルト一致 / 線形バッテリースケール / record-duty 半減でほぼ倍寿命（1.89×解析） / `sd_write_duty=1.0` での寿命崩壊 / 全 0 ガード / 充電オフセット → 無限寿命センチネル / `--fail-under-target` の exit code）
+
+**成果物 3: CI**
+
+- `.github/workflows/tools.yml`（**`tools` workflow**、ubuntu-latest / Python 3.11、`tools/**` 変更で push/PR トリガー + manual dispatch、他 workflow には触らない）
+- `tools/README.md`（両ツールの使い方 + `pip install pyogg` opt-in + Phase 5 実機後の retune note）
+
+**テスト**: 計 **17 pytest 全 green**（Phase 5+ bsim とは独立 CI）。
+
+**コミット**: `4424dc7`（`tools: PC-side dump decoder + pytest CI`）、`3369ef0`（`tools: power consumption predictor + pytest cases`）
+
+**制約**:
+- `decode-dump.py`: Opus → WAV はハード依存にしていないので、デフォルトでは `.opus` 連結止まり。BLE 再接続時の連番ロスは検出のみ（補完はしない）
+- `power-predict.py`: あくまでモデル値。Phase 5 で PPK2 計測値が出たらデフォルト mA を再フィット（README に明記）
+
+---
+
+### 22.10 関連ファイル
 
 | 新規ファイル | 役割 |
 |---|---|
 | `app/patches/0001-plan-b-fanout-tx-queue.patch` | omi `transport.c::pusher()` のファンアウト refactor |
 | `app/patches/0002-cmake-add-app-sources.patch` | omi の CMakeLists.txt に app/src/*.c をビルド対象として追加 |
 | `app/overlay/spisd-fixup.conf` | omi prj.conf の typo 修正・抜け CONFIG 補完・MSC 関連 CONFIG 追加 |
-| `app/src/wr_chunk.c` + `app/src/wr_chunk_logic.c` + `app/include/wr_chunk_logic.h` | 10分タイマー → ファイルリネーム → 新ファイル作成 + 純粋ロジック（命名 / 述語 / boot ID）|
-| `app/src/wr_fifo.c` + `app/src/wr_fifo_logic.c` + `app/include/wr_fifo_logic.h` | 1分ごとに `fs_statvfs`、空き<10% で最古 chunk を unlink + 純粋述語 |
+| `app/src/wr_chunk.c` + `app/src/wr_chunk_logic.c` + `app/include/wr_chunk_logic.h` | 10分タイマー → ファイルリネーム → 新ファイル作成 + 純粋ロジック（命名 / 述語 / boot ID / epoch / unsynced / size 閾値）+ MSC short-circuit |
+| `app/src/wr_fifo.c` + `app/src/wr_fifo_logic.c` + `app/include/wr_fifo_logic.h` | 1分ごとに `fs_statvfs`、空き<10% で最古 chunk を unlink + 純粋述語 + LEGACY/UNSYNCED/EPOCH classify + 削除優先度 + MSC short-circuit |
 | `app/src/wr_led_status.c` + `app/src/wr_led_pick.c` + `app/include/wr_led_pick.h` | 100ms tick の警告優先 + ハートビート LED 状態マシン + 純粋 picker |
-| `app/src/wr_msc_mode.c` + `app/src/wr_msc_mode_logic.c` + `app/include/wr_msc_mode_logic.h` | 起動時 D5 長押し検出 → `wr_msc_mode_is_active()` フラグ + 純粋判定 |
+| `app/src/wr_msc_mode.c` + `app/src/wr_msc_mode_logic.c` + `app/include/wr_msc_mode_logic.h` | 起動時 D5 長押し検出 → `wr_msc_mode_is_active()` フラグ + 純粋判定 + runtime-mode 述語群 + LED ヒント |
 | `tests/firmware/sanity/` | Twister + native_sim FIFO 閾値テスト（Phase 3 オリジナル）|
 | `tests/firmware/wr_led/` | LED picker ztest（13本、Phase 4-5+）|
-| `tests/firmware/wr_chunk/` `tests/firmware/wr_fifo/` `tests/firmware/wr_msc_mode/` | 純粋ロジック ztest 群（Phase 4-6+）|
-| `tests/bsim/`（将来）| Phase 6 で omi GATT を bsim で叩くシナリオ群を配置予定 |
+| `tests/firmware/wr_chunk/` `tests/firmware/wr_fifo/` `tests/firmware/wr_msc_mode/` | 純粋ロジック ztest 群（Phase 4-6+ + Phase 6 追加分: wr_fifo +18 / wr_msc +13）|
+| `tests/bsim/wr_smoke/test_scripts/` | bsim `wr_smoke` の `_env.sh` / `_compile.sh` / `run_smoke.sh`（Phase 5+ 1-device 実走）|
+| `tests/bsim/wr_link/` | bsim `wr_link` 2-device peripheral+central GATT verdict（同一バイナリ + `bs_tests -testid` で切替）|
+| `tools/decode-dump.py` + `tools/test_decode_dump.py` | PC 側 BLE notify dump デコーダ（stdlib-only、7 pytest 付）|
+| `tools/power-predict.py` + `tools/test_power_predict.py` | 電力モデル CLI + 10 pytest（§14.2 デフォルト一致）|
+| `tools/README.md` | tools/ 群の使い方 + Phase 5 retune note |
 | `.github/workflows/build.yml` | firmware-build CI（NCS v2.7-branch、UF2 + ztest）|
-| `.github/workflows/bsim.yml` | BabbleSim smoke CI（manual trigger、Phase 5+ scaffold）|
+| `.github/workflows/bsim.yml` | BabbleSim CI（manual trigger、5 stage: -help → wr_smoke compile/run → wr_link compile/run）|
+| `.github/workflows/bsim-nightly.yml` | bsim nightly trigger（`bsim.yml` を呼び出す）|
+| `.github/workflows/mobile.yml` | Flutter mobile app 用 CI |
+| `.github/workflows/tools.yml` | `tools/` の pytest CI（ubuntu-latest / Python 3.11、Phase 6）|
 | `app_mobile/`（Flutter skeleton）| Phase 6 自前ミニマルスマホアプリの雛形（BLE スキャン → 接続 → audioCodec notify dump）|
 | `docs/bsim-setup.md` | bsim 設計メモ（CI 構成・将来の bsim test 配置）|
 | `docs/phase5-quickstart.md` | Phase 5 実機 bring-up 手順（けんたさん向け 3 分版）|

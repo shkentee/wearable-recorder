@@ -2,6 +2,7 @@
 
 [![firmware-build](https://github.com/shkentee/wearable-recorder/actions/workflows/build.yml/badge.svg)](https://github.com/shkentee/wearable-recorder/actions/workflows/build.yml)
 [![bsim-smoke](https://github.com/shkentee/wearable-recorder/actions/workflows/bsim.yml/badge.svg)](https://github.com/shkentee/wearable-recorder/actions/workflows/bsim.yml)
+[![tools](https://github.com/shkentee/wearable-recorder/actions/workflows/tools.yml/badge.svg)](https://github.com/shkentee/wearable-recorder/actions/workflows/tools.yml)
 
 自作ウェアラブル録音デバイスのファームウェア。Seeed XIAO nRF52840 Sense + microSD で起きている間ずっと録音し、後でローカル faster-whisper large-v3 で文字起こしする。
 
@@ -9,7 +10,7 @@
 
 ## ステータス
 
-**Phase 4-6+ 完了（純化 + ztest 約60本）/ Phase 5+ scaffold（bsim CI）/ Phase 6 skeleton 着手（Flutter）/ Phase 5 実機待ち**
+**Phase 4-6+ 完了 / Phase 5+ bsim 実走（`wr_smoke` 1-dev + `wr_link` 2-dev GATT verdict）/ Phase 6 進行中（wr_fifo classify + wr_msc runtime + PC decoder + power model + Flutter skeleton、ztest 約90本 + tools pytest 17本）/ Phase 5 実機待ち**
 
 | Phase | 内容 | 状態 |
 |---|---|---|
@@ -19,9 +20,9 @@
 | Phase 4 | Plan B / チャンク / FIFO / MSC / LED（5サブタスク MVP）| ✅ |
 | Phase 4-5+ | LED picker 純化 + native_sim ztest 13本 | ✅ |
 | Phase 4-6+ | wr_chunk / wr_fifo / wr_msc_mode 純化 + ztest 約47本（合計 約60本）| ✅ |
-| Phase 5+ | BabbleSim CI scaffold（manual trigger、smoke のみ）| ✅ |
+| Phase 5+ | BabbleSim CI（5 stage: -help → wr_smoke → wr_link 2-device GATT verdict）| ✅ |
 | Phase 5 | 実機書き込み・電力測定（PPK2）| ⏳ → [Phase 5 quickstart](docs/phase5-quickstart.md) |
-| Phase 6 | 自前ミニマルスマホアプリ + チャンク命名本格化 | 🟡 skeleton 着手（`app_mobile/` Flutter）|
+| Phase 6 | wr_chunk epoch/boot-id/size + wr_fifo classify (+18 ztest) + wr_msc runtime-mode (+13 ztest) + PC decoder + power-predict + Flutter skeleton | 🟡 進行中（残: 実機 BLE / Drive アップロード / `usb_enable()` runtime 切替）|
 
 詳細は [docs/wearable-recorder-spec.md](docs/wearable-recorder-spec.md) §22、Phase 5 実機 bring-up は [docs/phase5-quickstart.md](docs/phase5-quickstart.md)、bsim 設計は [docs/bsim-setup.md](docs/bsim-setup.md)、Phase 6 着手準備は [docs/phase6-plan-draft.md](docs/phase6-plan-draft.md) 参照。
 
@@ -81,11 +82,19 @@
 │   ├── firmware/
 │   │   ├── data/                   # WAV モックデータ
 │   │   ├── sanity/                 # Twister + native_sim サニティテスト（Phase 3）
-│   │   ├── wr_chunk/               # 純粋ロジック ztest（Phase 4-6+）
-│   │   ├── wr_fifo/                # 同上
+│   │   ├── wr_chunk/               # 純粋ロジック ztest（Phase 4-6+ + Phase 6）
+│   │   ├── wr_fifo/                # 同上 + classify/compare_priority +18 (Phase 6)
 │   │   ├── wr_led/                 # LED picker ztest（Phase 4-5+、13本）
-│   │   └── wr_msc_mode/            # 同上（11本）
-│   └── bsim/                       # （将来）bsim BLE シナリオテスト群（Phase 6）
+│   │   └── wr_msc_mode/            # 同上 + runtime-mode 述語 +13 (Phase 6)
+│   └── bsim/
+│       ├── wr_smoke/test_scripts/  # 1-device bsim smoke（_env / _compile / run_smoke）
+│       └── wr_link/                # 2-device peripheral+central GATT verdict
+├── tools/                          # PC-side helpers（Phase 6）
+│   ├── decode-dump.py              # BLE notify dump デコーダ（stdlib-only、+7 pytest）
+│   ├── power-predict.py            # 電力モデル CLI（§14.2 デフォルト一致、+10 pytest）
+│   ├── test_decode_dump.py
+│   ├── test_power_predict.py
+│   └── README.md
 ├── third_party/omi/                # BasedHardware/omi (git submodule、不可侵)
 ├── docs/
 │   ├── wearable-recorder-spec.md   # 正式仕様書
@@ -95,7 +104,10 @@
 ├── west.yml                        # Zephyr west manifest（NCS v2.7-branch）
 └── .github/workflows/
     ├── build.yml                   # firmware-build CI（UF2 + ztest）
-    └── bsim.yml                    # bsim-smoke CI（manual trigger、Phase 5+ scaffold）
+    ├── bsim.yml                    # BabbleSim CI（manual trigger、5 stage: wr_smoke + wr_link）
+    ├── bsim-nightly.yml            # bsim nightly trigger
+    ├── mobile.yml                  # Flutter mobile app CI
+    └── tools.yml                   # tools/ pytest CI（Phase 6）
 ```
 
 ## ビルド
