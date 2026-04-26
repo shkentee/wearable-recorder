@@ -51,8 +51,10 @@ static uint8_t discover_cb(struct bt_conn *conn,
 
 	if (params->type == BT_GATT_DISCOVER_PRIMARY) {
 		bs_trace_info_time(1, "central: found omi audio service\n");
+		const struct bt_gatt_service_val *svc = attr->user_data;
 		discover_params.uuid = BT_UUID_OMI_AUDIO_CODEC;
 		discover_params.start_handle = attr->handle + 1;
+		discover_params.end_handle = svc->end_handle;
 		discover_params.type = BT_GATT_DISCOVER_CHARACTERISTIC;
 		int err = bt_gatt_discover(conn, &discover_params);
 		if (err) {
@@ -66,7 +68,9 @@ static uint8_t discover_cb(struct bt_conn *conn,
 		sub_params.notify = notify_cb;
 		sub_params.value = BT_GATT_CCC_NOTIFY;
 		sub_params.value_handle = bt_gatt_attr_value_handle(attr);
-		sub_params.ccc_handle = attr->handle + 2;
+		/* CCC handle is value_handle + 1 (the descriptor lives right
+		 * after the value attribute in the GATT db). */
+		sub_params.ccc_handle = sub_params.value_handle + 1;
 		int err = bt_gatt_subscribe(conn, &sub_params);
 		if (err && err != -EALREADY) {
 			FAIL("central: subscribe failed (%d)\n", err);
