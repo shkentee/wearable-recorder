@@ -104,7 +104,7 @@ class WrDriveUploader {
     if (cached != null) return cached;
 
     // Search for an existing folder with the expected name owned by the user.
-    final query =
+    const query =
         "mimeType='application/vnd.google-apps.folder' and name='$_kFolderName' and trashed=false";
     final result = await api.files.list(
       q: query,

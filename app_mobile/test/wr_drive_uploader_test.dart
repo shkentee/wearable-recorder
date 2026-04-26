@@ -12,8 +12,6 @@ import 'package:wearable_recorder/services/wr_drive_uploader.dart';
 
 class _MockGoogleSignIn extends Mock implements GoogleSignIn {}
 
-class _MockGoogleSignInAccount extends Mock implements GoogleSignInAccount {}
-
 class _MockDriveApi extends Mock implements drive.DriveApi {}
 
 class _MockFilesResource extends Mock implements drive.FilesResource {}
@@ -62,16 +60,12 @@ void main() {
           )).thenAnswer((_) async => drive.FileList()..files = []);
 
       // First create() = folder, second create() = uploaded file.
-      var callCount = 0;
       when(() => mockFiles.create(any()))
           .thenAnswer((_) async => drive.File()..id = 'folder-id-123');
       when(() => mockFiles.create(
             any(),
             uploadMedia: any(named: 'uploadMedia'),
-          )).thenAnswer((_) async {
-        callCount++;
-        return drive.File()..id = 'file-id-abc';
-      });
+          )).thenAnswer((_) async => drive.File()..id = 'file-id-abc');
 
       final dumpFile = await _tempOpusFile();
       final uploader = WrDriveUploader.withApi(mockApi);

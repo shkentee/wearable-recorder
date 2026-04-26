@@ -2,7 +2,7 @@ diff --git a/omi/firmware/devkit/CMakeLists.txt b/omi/firmware/devkit/CMakeLists
 index 9dbba5f..3341b9c 100644
 --- a/omi/firmware/devkit/CMakeLists.txt
 +++ b/omi/firmware/devkit/CMakeLists.txt
-@@ -19,6 +19,22 @@ target_sources(app PRIVATE
+@@ -19,6 +19,23 @@ target_sources(app PRIVATE
      src/usb.c
      src/wdog_facade.c
  	# src/nfc.c future release
@@ -24,5 +24,5 @@ index 9dbba5f..3341b9c 100644
 +target_include_directories(app PRIVATE
 +    ${CMAKE_CURRENT_SOURCE_DIR}/../../../../../app/include
  )
- 
+
  target_sources_ifdef(CONFIG_OMI_CODEC_OPUS app PRIVATE
