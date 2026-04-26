@@ -25,6 +25,11 @@ dependencies:
   # PC-side tooling re-parses the headers offline.
   path_provider: ^2.1.4
 
+  # Google Drive upload for recorded .opus sessions.
+  google_sign_in: ^6.2.1
+  googleapis: ^12.0.0
+  http: ^1.2.2
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
