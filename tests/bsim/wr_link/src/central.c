@@ -45,19 +45,25 @@ static uint8_t discover_cb(struct bt_conn *conn,
 			   struct bt_gatt_discover_params *params)
 {
 	if (!attr) {
-		FAIL("central: discovery completed without finding target\n");
+		FAIL("central: discovery completed without finding audioCodec\n");
 		return BT_GATT_ITER_STOP;
 	}
 
-	/* BT_GATT_DISCOVER_BY_UUID returns the matching ATTRIBUTE (value
-	 * attr for a chrc), so attr->handle is already the value handle.
-	 * CCC sits at value_handle + 1 by the GATT spec layout when the
-	 * peripheral uses BT_GATT_CCC right after BT_GATT_CHARACTERISTIC. */
-	bs_trace_info_time(1, "central: found audioCodec value attr\n");
+	/* Walk all chrc declarations. attr->user_data is bt_gatt_chrc;
+	 * its uuid is the chrc value's UUID (the one we care about).
+	 * Mirrors zephyr/tests/bsim/bluetooth/host/gatt/notify pattern. */
+	const struct bt_gatt_chrc *chrc = attr->user_data;
+	if (bt_uuid_cmp(chrc->uuid, BT_UUID_OMI_AUDIO_CODEC) != 0) {
+		return BT_GATT_ITER_CONTINUE;
+	}
+
+	bs_trace_info_time(1, "central: found audioCodec chrc, value_handle=%u\n",
+			   chrc->value_handle);
 	sub_params.notify = notify_cb;
 	sub_params.value = BT_GATT_CCC_NOTIFY;
-	sub_params.value_handle = attr->handle;
-	sub_params.ccc_handle = attr->handle + 1;
+	sub_params.value_handle = chrc->value_handle;
+	/* CCC sits one handle past the chrc value attribute. */
+	sub_params.ccc_handle = chrc->value_handle + 1;
 	int err = bt_gatt_subscribe(conn, &sub_params);
 	if (err && err != -EALREADY) {
 		FAIL("central: subscribe failed (%d)\n", err);
@@ -69,14 +75,14 @@ static uint8_t discover_cb(struct bt_conn *conn,
 
 static void start_discovery(struct bt_conn *conn)
 {
-	/* DISCOVER_BY_UUID matches any attr (typically the chrc value)
-	 * by UUID across the whole ATT range — simplest path to the
-	 * audioCodec value handle on this small peripheral GATT db. */
-	discover_params.uuid = BT_UUID_OMI_AUDIO_CODEC;
+	/* Walk all characteristics (uuid=NULL) across the connection's
+	 * GATT db; the callback filters by chrc->uuid. This matches
+	 * Zephyr's own bsim/host/gatt/notify reference test. */
+	discover_params.uuid = NULL;
 	discover_params.func = discover_cb;
 	discover_params.start_handle = BT_ATT_FIRST_ATTRIBUTE_HANDLE;
 	discover_params.end_handle = BT_ATT_LAST_ATTRIBUTE_HANDLE;
-	discover_params.type = BT_GATT_DISCOVER_ATTRIBUTE;
+	discover_params.type = BT_GATT_DISCOVER_CHARACTERISTIC;
 
 	int err = bt_gatt_discover(conn, &discover_params);
 	if (err) {
