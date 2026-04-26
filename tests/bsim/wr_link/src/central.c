@@ -49,37 +49,34 @@ static uint8_t discover_cb(struct bt_conn *conn,
 		return BT_GATT_ITER_STOP;
 	}
 
-	if (params->type == BT_GATT_DISCOVER_CHARACTERISTIC) {
-		bs_trace_info_time(1, "central: found audioCodec characteristic\n");
-		sub_params.notify = notify_cb;
-		sub_params.value = BT_GATT_CCC_NOTIFY;
-		sub_params.value_handle = bt_gatt_attr_value_handle(attr);
-		/* CCC handle is value_handle + 1 (the descriptor lives right
-		 * after the value attribute in the GATT db). */
-		sub_params.ccc_handle = sub_params.value_handle + 1;
-		int err = bt_gatt_subscribe(conn, &sub_params);
-		if (err && err != -EALREADY) {
-			FAIL("central: subscribe failed (%d)\n", err);
-			return BT_GATT_ITER_STOP;
-		}
-		SET_FLAG(flag_audio_subscribed);
+	/* BT_GATT_DISCOVER_BY_UUID returns the matching ATTRIBUTE (value
+	 * attr for a chrc), so attr->handle is already the value handle.
+	 * CCC sits at value_handle + 1 by the GATT spec layout when the
+	 * peripheral uses BT_GATT_CCC right after BT_GATT_CHARACTERISTIC. */
+	bs_trace_info_time(1, "central: found audioCodec value attr\n");
+	sub_params.notify = notify_cb;
+	sub_params.value = BT_GATT_CCC_NOTIFY;
+	sub_params.value_handle = attr->handle;
+	sub_params.ccc_handle = attr->handle + 1;
+	int err = bt_gatt_subscribe(conn, &sub_params);
+	if (err && err != -EALREADY) {
+		FAIL("central: subscribe failed (%d)\n", err);
 		return BT_GATT_ITER_STOP;
 	}
-
-	return BT_GATT_ITER_CONTINUE;
+	SET_FLAG(flag_audio_subscribed);
+	return BT_GATT_ITER_STOP;
 }
 
 static void start_discovery(struct bt_conn *conn)
 {
-	/* Skip primary-service discovery — we know the audioCodec UUID
-	 * upfront, so a single characteristic discovery across the full
-	 * GATT handle range finds it directly regardless of its parent
-	 * service layout. Simpler and dodges end_handle bookkeeping. */
+	/* DISCOVER_BY_UUID matches any attr (typically the chrc value)
+	 * by UUID across the whole ATT range — simplest path to the
+	 * audioCodec value handle on this small peripheral GATT db. */
 	discover_params.uuid = BT_UUID_OMI_AUDIO_CODEC;
 	discover_params.func = discover_cb;
 	discover_params.start_handle = BT_ATT_FIRST_ATTRIBUTE_HANDLE;
 	discover_params.end_handle = BT_ATT_LAST_ATTRIBUTE_HANDLE;
-	discover_params.type = BT_GATT_DISCOVER_CHARACTERISTIC;
+	discover_params.type = BT_GATT_DISCOVER_ATTRIBUTE;
 
 	int err = bt_gatt_discover(conn, &discover_params);
 	if (err) {
