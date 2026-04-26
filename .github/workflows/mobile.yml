@@ -93,6 +93,19 @@ jobs:
             .
           rm -f test/widget_test.dart
 
+      - name: Bump Kotlin Gradle plugin to 1.9.24 in generated settings.gradle
+        # Flutter 3.24's `flutter create` pins org.jetbrains.kotlin.android to
+        # 1.7.10, but transitive plugin deps (e.g. annotation-jvm 1.9.1) ship
+        # bytecode with metadata version 1.9.0 — kotlinc 1.7.1 then refuses to
+        # compile :app:compileDebugKotlin with "Module was compiled with an
+        # incompatible version of Kotlin" errors. Bump the pinned version.
+        run: |
+          SETTINGS=android/settings.gradle
+          test -f "$SETTINGS" || { echo "settings.gradle not found"; exit 1; }
+          sed -i -E 's/(id "org\.jetbrains\.kotlin\.android" version ")[^"]+(")/\11.9.24\2/' "$SETTINGS"
+          echo '--- patched android/settings.gradle ---'
+          cat "$SETTINGS"
+
       - name: Inject BLE permissions into AndroidManifest.xml
         # `flutter create` ships a manifest without BLE / location permissions.
         # We inject the three permissions our flutter_blue_plus + Android 12+
