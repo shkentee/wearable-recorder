@@ -1,6 +1,7 @@
 # wearable-recorder
 
-![build](https://github.com/shkentee/wearable-recorder/actions/workflows/build.yml/badge.svg)
+[![firmware-build](https://github.com/shkentee/wearable-recorder/actions/workflows/build.yml/badge.svg)](https://github.com/shkentee/wearable-recorder/actions/workflows/build.yml)
+[![bsim-smoke](https://github.com/shkentee/wearable-recorder/actions/workflows/bsim.yml/badge.svg)](https://github.com/shkentee/wearable-recorder/actions/workflows/bsim.yml)
 
 自作ウェアラブル録音デバイスのファームウェア。Seeed XIAO nRF52840 Sense + microSD で起きている間ずっと録音し、後でローカル faster-whisper large-v3 で文字起こしする。
 
@@ -8,7 +9,7 @@
 
 ## ステータス
 
-**Phase 4 完了 / Phase 5 待ち**
+**Phase 4-6+ 完了（純化 + ztest 約60本）/ Phase 5+ scaffold（bsim CI）/ Phase 6 skeleton 着手（Flutter）/ Phase 5 実機待ち**
 
 | Phase | 内容 | 状態 |
 |---|---|---|
@@ -16,10 +17,13 @@
 | Phase 2 | GitHub Actions ビルド CI（NCS v2.7-branch、UF2 アーティファクト）| ✅ |
 | Phase 3 | Twister + native_sim サニティテスト（FIFO 閾値ユニットテスト）| ✅ |
 | Phase 4 | Plan B / チャンク / FIFO / MSC / LED（5サブタスク MVP）| ✅ |
-| Phase 5 | 実機書き込み・電力測定（PPK2）| ⏳ |
-| Phase 6 | 自前ミニマルスマホアプリ + チャンク命名本格化 | ⏳ |
+| Phase 4-5+ | LED picker 純化 + native_sim ztest 13本 | ✅ |
+| Phase 4-6+ | wr_chunk / wr_fifo / wr_msc_mode 純化 + ztest 約47本（合計 約60本）| ✅ |
+| Phase 5+ | BabbleSim CI scaffold（manual trigger、smoke のみ）| ✅ |
+| Phase 5 | 実機書き込み・電力測定（PPK2）| ⏳ → [Phase 5 quickstart](docs/phase5-quickstart.md) |
+| Phase 6 | 自前ミニマルスマホアプリ + チャンク命名本格化 | 🟡 skeleton 着手（`app_mobile/` Flutter）|
 
-詳細は [docs/wearable-recorder-spec.md](docs/wearable-recorder-spec.md) §22、Phase 6 着手準備は [docs/phase6-plan-draft.md](docs/phase6-plan-draft.md) 参照。
+詳細は [docs/wearable-recorder-spec.md](docs/wearable-recorder-spec.md) §22、Phase 5 実機 bring-up は [docs/phase5-quickstart.md](docs/phase5-quickstart.md)、bsim 設計は [docs/bsim-setup.md](docs/bsim-setup.md)、Phase 6 着手準備は [docs/phase6-plan-draft.md](docs/phase6-plan-draft.md) 参照。
 
 ### Phase 4 完了内容
 
@@ -51,22 +55,47 @@
 │   ├── patches/
 │   │   ├── 0001-plan-b-fanout-tx-queue.patch
 │   │   └── 0002-cmake-add-app-sources.patch
+│   ├── include/                    # 純粋ロジックの公開ヘッダ（ztest からも参照）
+│   │   ├── wr_chunk_logic.h
+│   │   ├── wr_fifo_logic.h
+│   │   ├── wr_led_pick.h
+│   │   └── wr_msc_mode_logic.h
 │   └── src/
-│       ├── wr_chunk.c              # 10分チャンクローテーション
-│       ├── wr_fifo.c               # 空き10%以下で最古削除
-│       ├── wr_led_status.c         # ハートビート + 警告優先 LED 状態マシン
-│       └── wr_msc_mode.c           # 起動時ボタン長押し MSC モード検出
+│       ├── wr_chunk.c              # 10分チャンクローテーション（Zephyr グルー）
+│       ├── wr_chunk_logic.c        # 純粋ロジック（命名 / 述語 / boot ID）
+│       ├── wr_fifo.c               # 空き10%以下で最古削除（Zephyr グルー）
+│       ├── wr_fifo_logic.c         # 純粋述語（prune / managed / compare）
+│       ├── wr_led_status.c         # ハートビート + 警告優先 LED 状態マシン（グルー）
+│       ├── wr_led_pick.c           # 純粋 LED picker（優先度カスケード + 位相）
+│       ├── wr_msc_mode.c           # 起動時ボタン長押し MSC モード検出（グルー）
+│       └── wr_msc_mode_logic.c     # 純粋判定（threshold / 防御）
+├── app_mobile/                     # Phase 6 自前 Flutter アプリ（skeleton）
+│   ├── pubspec.yaml                # flutter_blue_plus / permission_handler / path_provider
+│   └── lib/
+│       ├── main.dart
+│       ├── pages/                  # scan_page / device_page
+│       └── services/               # wr_uuids / wr_ble_scanner / wr_ble_device / wr_audio_packet / wr_packet_sink
 ├── overlay/                        # XIAO Sense 用 devicetree overlay
 ├── boards/native_sim/              # native_sim テスト用ボード定義
-├── tests/firmware/
-│   ├── data/                       # WAV モックデータ
-│   └── sanity/                     # Twister + native_sim サニティテスト
+├── tests/
+│   ├── firmware/
+│   │   ├── data/                   # WAV モックデータ
+│   │   ├── sanity/                 # Twister + native_sim サニティテスト（Phase 3）
+│   │   ├── wr_chunk/               # 純粋ロジック ztest（Phase 4-6+）
+│   │   ├── wr_fifo/                # 同上
+│   │   ├── wr_led/                 # LED picker ztest（Phase 4-5+、13本）
+│   │   └── wr_msc_mode/            # 同上（11本）
+│   └── bsim/                       # （将来）bsim BLE シナリオテスト群（Phase 6）
 ├── third_party/omi/                # BasedHardware/omi (git submodule、不可侵)
 ├── docs/
 │   ├── wearable-recorder-spec.md   # 正式仕様書
+│   ├── phase5-quickstart.md        # Phase 5 実機 bring-up 手順（けんた向け 3 分版）
+│   ├── bsim-setup.md               # BabbleSim CI 設計メモ
 │   └── phase6-plan-draft.md        # Phase 6 着手用 TODO ドラフト
 ├── west.yml                        # Zephyr west manifest（NCS v2.7-branch）
-└── .github/workflows/              # CI（GitHub Actions）
+└── .github/workflows/
+    ├── build.yml                   # firmware-build CI（UF2 + ztest）
+    └── bsim.yml                    # bsim-smoke CI（manual trigger、Phase 5+ scaffold）
 ```
 
 ## ビルド

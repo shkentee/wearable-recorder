@@ -21,21 +21,21 @@
 |---|---|---|
 | D1 | SD SPI: MOSI=D10/MISO=D9/SCK=D8/CS=D2(P0.28)/24MHz | ✅ |
 | D2 | ボタン: D4(P0.04, OUT) + D5(P0.05, IN) | ✅ |
-| D3 | LED: ハートビート式 + 警告優先 | ✅ Phase 4-5（バッテリーADCフックは Phase 5）|
-| D4 | SD: Plan B（常時書き込み） | ✅ Phase 4-1（pusher() ファンアウト patch 適用済）|
+| D3 | LED: ハートビート式 + 警告優先 | ✅ Phase 4-5 + 4-5+（純化 + 13 ztest。バッテリーADCフックは Phase 5）|
+| D4 | SD: Plan B（常時書き込み） | ✅ Phase 4-1（pusher() ファンアウト patch 適用済。実機ジッター測定は Phase 5）|
 | D5 | バッテリー: 200mAh一本 | ⏳ 実機調達 Phase 5 |
-| D6 | チャンク: 10分/file | 🟡 Phase 4-2 MVP（連番命名のみ。UNIX_epoch / unsynced_xxx / サイズ閾値は Phase 6）|
-| D7 | ファイル名: `<UNIX_epoch>.opus` / 未同期時 `unsynced_<bootid>_<seq>.opus` | ⏳ Phase 6 |
-| D8 | FIFO: 空き10%以下で最古から削除 | ✅ Phase 4-3 |
-| D9 | USB MSC: ボタン長押し起動でMSCモード | 🟡 Phase 4-4 MVP（フラグ検出のみ。runtime mode-switch は Phase 5 実機後）|
+| D6 | チャンク: 10分/file | ✅ Phase 4-2 + 4-6+（純化 + ztest。サイズ閾値は wr_chunk_logic 実装済、Phase 6 で配線）|
+| D7 | ファイル名: `<UNIX_epoch>.opus` / 未同期時 `unsynced_<bootid>_<seq>.opus` | 🟡 Phase 4-6+（純化ロジック + ztest 済。`performSyncTime()` 連動は Phase 6）|
+| D8 | FIFO: 空き10%以下で最古から削除 | ✅ Phase 4-3 + 4-6+（純化 + ztest）|
+| D9 | USB MSC: ボタン長押し起動でMSCモード | 🟡 Phase 4-4 + 4-6+（純化 + ztest 済。`usb_enable()` runtime mode-switch は Phase 5 実機後）|
 | D10 | Opus: 32kbps（omi標準）| ✅ |
 | D11 | DTX: 0（無効、omi標準）| ✅ |
 | D12 | 時刻同期: omi `performSyncTime()` | ✅ |
 | D13 | リポジトリ: 自前 + omi submodule | ✅ |
-| D14 | テスト: GitHub CI + native_sim + 実機 | ✅ Phase 2/3（実機は Phase 5）|
+| D14 | テスト: GitHub CI + native_sim + 実機 | ✅ Phase 2/3 + Phase 4-5+/4-6+（ztest 約60本）+ Phase 5+（bsim CI scaffold、smoke のみ）。実機は Phase 5 |
 | D15 | リポ名: `shkentee/wearable-recorder` | ✅ |
 | D16 | 充電中: 録音継続、黄HB/緑常時 | ✅ Phase 4-5 |
-| D17 | スマホアプリ: Phase 6で自前ミニマル | ⏳ Phase 6 |
+| D17 | スマホアプリ: Phase 6で自前ミニマル | 🟡 Phase 6 着手（`app_mobile/` Flutter skeleton: BLE スキャン / 接続 / Opus パケット notify dump）|
 
 ---
 
@@ -730,6 +730,10 @@ adafruit-nrfutil dfu genpkg \
 | 2026-04-26 | Phase 2 完了。GitHub Actions ビルド CI（NCS v2.7-branch コンテナ、UF2 アーティファクト出力） |
 | 2026-04-26 | Phase 3 完了。Twister + native_sim サニティテスト（FIFO 閾値の単体テスト）|
 | 2026-04-26 | Phase 4 完了（5サブタスク MVP）。Plan B / チャンクローテーション / FIFO / LED / USB MSC を実装。詳細は §22 / §16.3 参照 |
+| 2026-04-26 | Phase 4-5+ 完了。`wr_led_pick()` 純化 + native_sim ztest 13本（§22.2）|
+| 2026-04-26 | Phase 4-6+ 完了。`wr_chunk_logic` / `wr_fifo_logic` / `wr_msc_mode_logic` 純化 + ztest 約60本（§22.3、見かけ上の D6/D7/D8/D9 ロジックが Twister 緑で確認可能に）|
+| 2026-04-26 | Phase 5+ 着手（CI scaffold のみ）。BabbleSim smoke ワークフロー追加（`.github/workflows/bsim.yml`、manual trigger）。実機検証 / 電力測定は引き続き Phase 5 本体タスク（§22.4）|
+| 2026-04-26 | Phase 6 着手（skeleton のみ）。`app_mobile/` Flutter プロジェクト雛形（BLE スキャン / 接続 / `audioCodec` notify dump）（§22.5）|
 
 ---
 
@@ -754,18 +758,113 @@ adafruit-nrfutil dfu genpkg \
 
 → Phase 5/6 の追加実装（USB MSC ランタイム、ADC、Plan B 実機チューニング、Phase 6 で時刻管理拡張）に対しても十分な余裕あり。
 
-### 22.2 関連ファイル
+---
+
+### 22.2 Phase 4-5+: `wr_led_pick()` 純化 + LED ztest
+
+LED 状態マシンを「純粋ロジック（優先度カスケード + ハートビート位相演算）」と「Zephyr グルー（タイマー + GPIO write）」に分離した。純粋部分は `app/src/wr_led_pick.c` / `app/include/wr_led_pick.h`、ファームと native_sim ztest 両方からリンクされる。
+
+**成果物**
+- `app/include/wr_led_pick.h` / `app/src/wr_led_pick.c`（pure picker）
+- `app/src/wr_led_status.c`（純粋部分を呼ぶグルーに refactor）
+
+**テスト**: `tests/firmware/wr_led/`（ztest 13本、native_sim）
+- バッテリー警告の上書き優先度（crit > low > sd-full > sd-missing > charging > BLE/録音 HB > idle）
+- batt-crit / batt-low / sd-missing のブリンク位相
+- sd-full 赤 solid、charged 緑 solid、charging 黄 HB
+- BLE-only / 録音-only / 両方ON 時の交互パターン
+- バッテリー閾値境界（6%, 21%）
+
+**コミット範囲**: `3b29e18` (`Phase 4-5+: extract wr_led_pick() pure picker + 12 ztest cases`)、`68e810b` (Twister 用 ztest 名前 prefix 修正)、`d72e22f` (未使用 const 整理)
+
+**制約**: 実機 ADC 未配線（バッテリー残量はテストで擬似値を渡す）。GPIO 出力の実際の色味は実機 LED で要確認。
+
+---
+
+### 22.3 Phase 4-6+: wr_chunk / wr_fifo / wr_msc_mode の純化 + ztest
+
+Phase 4-5+ と同じパターンで、残り 3 モジュールも「純粋ロジック」を切り出して native_sim ztest を追加した。
+
+**成果物**
+
+| モジュール | 純粋ヘッダ / 実装 | ztest |
+|---|---|---|
+| wr_chunk | `app/include/wr_chunk_logic.h` / `app/src/wr_chunk_logic.c` | `tests/firmware/wr_chunk/`（連番命名 / `should_rotate` 述語 / **epoch 命名 / unsynced_<bootid>_<seq> / boot ID 生成 / サイズ閾値ローテ** を含む 約30本超） |
+| wr_fifo | `app/include/wr_fifo_logic.h` / `app/src/wr_fifo_logic.c` | `tests/firmware/wr_fifo/`（prune 述語 / `is_managed_chunk` / `compare_chunk` の 16本） |
+| wr_msc_mode | `app/include/wr_msc_mode_logic.h` / `app/src/wr_msc_mode_logic.c` | `tests/firmware/wr_msc_mode/`（threshold 上下 / 全押し / ゼロ・負値防御 の 11本） |
+
+**コミット範囲**: `ddaf161` (wr_chunk)、`cec8549` (wr_fifo)、`e5ce707` (header コメント修正)、`fc926c6` (wr_msc_mode)
+
+**制約**:
+- ファーム側（`wr_chunk.c` 等）から純粋ロジックへの呼び出し置き換えは最小限。動作変更はゼロ（refactor only、振る舞い同値）
+- D7（UNIX_epoch / unsynced ファイル名）は **純粋ロジック側は完成**。`performSyncTime()` 後のチャンクファイル生成パスへの配線は Phase 6 で実施
+- D9 の USB MSC `usb_enable()` 配線は引き続き Phase 5 実機検証後
+
+---
+
+### 22.4 Phase 5+: BabbleSim CI scaffold
+
+Phase 5 の実機検証に先立って、Linux 上で **実 Zephyr Bluetooth ホスト + コントローラ** を 2.4 GHz 物理層シミュレータ（[BabbleSim](https://babblesim.github.io/)）に対して走らせる土台を整備した。Phase 6 で「omi GATT サービスに対する接続 / 切断 / MTU ネゴシエーション / チャンク push プロトコルの長時間挙動」を hardware-in-the-loop 抜きで回せる準備。
+
+**成果物**
+- `.github/workflows/bsim.yml`（manual trigger / `workflow_dispatch`、bsim を `bsim_west` manifest からビルド → smoke check）
+- `docs/bsim-setup.md`（理由・スコープ分離・将来の `tests/bsim/wr_*/` 配置パターン）
+
+**テスト**: 現時点は **smoke check のみ**（`bs_2G4_phy_v1` / `bs_device_handbrake` 等の bsim binary が `-help` を返すこと）。Zephyr-bundled の bsim test を NCS 上で直接コンパイルすると `nrfxlib/softdevice_controller` が `nrf52_bsim` の float ABI を CMake-reject するため、コントローラ差し替え（`CONFIG_BT_LL_SW_SPLIT=y` + SoftDevice 抑止）が必要。これは Phase 6 で `tests/bsim/wr_*/` 着手時に対応。
+
+**コミット範囲**: `528659f` → `c879ad6` → `0deac40` → `d0f17f2` → `5e973ad` → `65e286b`（manifest URL / 32-bit toolchain / bsim_west の nested layout / ZEPHYR_BASE 退避 / apt deps / smoke 範囲縮退の一連）
+
+**制約**:
+- 自動 CI トリガーは無し（push / PR では走らない）。`make everything` が ~5 分かかるため、安定するまで manual のみ
+- Zephyr/NCS bsim テスト本体（`tests/bsim/wr_*/`）は **未作成**。Phase 6 で omi の audio / DFU / accel GATT を 2 デバイス間で叩くシナリオを追加予定
+- 実機との等価性は **未保証**（bsim はロジック検証用、電力やラジオの実物特性は PPK2 + 実機のみで検証）
+
+---
+
+### 22.5 Phase 6 着手: `app_mobile/` Flutter skeleton
+
+D17（自前ミニマルスマホアプリ）の雛形に着手。Phase 6 本体（Google Drive アップロード / Foreground Service / Storage GATT 経由の一括取得）に向けた **接続 + audioCodec notify dump** までの最低限を実装。
+
+**成果物**
+- `app_mobile/pubspec.yaml`（`flutter_blue_plus` / `permission_handler` / `path_provider`、Flutter SDK ≥3.24 / Dart ≥3.5）
+- `app_mobile/lib/main.dart` + `lib/pages/scan_page.dart` / `device_page.dart`（BLE スキャン → 接続 → 状態表示）
+- `app_mobile/lib/services/wr_uuids.dart`（仕様書 §5.1 の omi GATT UUID 一覧の Dart 定義）
+- `app_mobile/lib/services/wr_ble_scanner.dart` / `wr_ble_device.dart`（接続管理）
+- `app_mobile/lib/services/wr_audio_packet.dart` / `wr_packet_sink.dart`（audioCodec notify を `path_provider` のドキュメント領域へ生バイト dump、PC 側 Whisper パイプラインに引き渡す前提）
+
+**テスト**: 現時点は **none**（`flutter test` 雛形はあるが実機 BLE 依存のため CI 化は Phase 6 後半）。
+
+**コミット範囲**: `2fee03e` (`Phase 6 着手: minimal Flutter mobile-app skeleton`)、その後 `wr_audio_packet.dart` / `wr_packet_sink.dart` 追加と `device_page.dart` / `wr_ble_device.dart` の packet sink 配線（このセクションが書かれた時点で `app_mobile/` ディレクトリは並行 agent が作業中）
+
+**制約**:
+- **実機未到着のため未検証**: BLE スキャンが実 wearable-recorder デバイスを発見できるか、notify ペイロードが §5.1 の UUID で取れるか、Android 13+ / iOS 17+ の権限プロンプトが正しく出るか
+- Storage GATT (`30295780`) 経由の未送信ファイル一括取得は **未実装**（接続後の audioCodec ストリーミングのみ）
+- `performSyncTime()` 互換の時刻同期送信は **未実装**（Phase 6 で追加、§22.3 の D7 配線とセット）
+- Google Drive アップロード / Foreground Service / バックグラウンド常時接続は Phase 6 後半
+
+---
+
+### 22.6 関連ファイル
 
 | 新規ファイル | 役割 |
 |---|---|
 | `app/patches/0001-plan-b-fanout-tx-queue.patch` | omi `transport.c::pusher()` のファンアウト refactor |
 | `app/patches/0002-cmake-add-app-sources.patch` | omi の CMakeLists.txt に app/src/*.c をビルド対象として追加 |
 | `app/overlay/spisd-fixup.conf` | omi prj.conf の typo 修正・抜け CONFIG 補完・MSC 関連 CONFIG 追加 |
-| `app/src/wr_chunk.c` | 10分タイマー → ファイルリネーム → 新ファイル作成 |
-| `app/src/wr_fifo.c` | 1分ごとに `fs_statvfs`、空き<10% で最古 chunk を unlink |
-| `app/src/wr_led_status.c` | 100ms tick の警告優先 + ハートビート LED 状態マシン |
-| `app/src/wr_msc_mode.c` | 起動時 D5 長押し検出 → `wr_msc_mode_is_active()` フラグ |
-| `tests/firmware/sanity/` | Twister + native_sim FIFO 閾値テスト |
+| `app/src/wr_chunk.c` + `app/src/wr_chunk_logic.c` + `app/include/wr_chunk_logic.h` | 10分タイマー → ファイルリネーム → 新ファイル作成 + 純粋ロジック（命名 / 述語 / boot ID）|
+| `app/src/wr_fifo.c` + `app/src/wr_fifo_logic.c` + `app/include/wr_fifo_logic.h` | 1分ごとに `fs_statvfs`、空き<10% で最古 chunk を unlink + 純粋述語 |
+| `app/src/wr_led_status.c` + `app/src/wr_led_pick.c` + `app/include/wr_led_pick.h` | 100ms tick の警告優先 + ハートビート LED 状態マシン + 純粋 picker |
+| `app/src/wr_msc_mode.c` + `app/src/wr_msc_mode_logic.c` + `app/include/wr_msc_mode_logic.h` | 起動時 D5 長押し検出 → `wr_msc_mode_is_active()` フラグ + 純粋判定 |
+| `tests/firmware/sanity/` | Twister + native_sim FIFO 閾値テスト（Phase 3 オリジナル）|
+| `tests/firmware/wr_led/` | LED picker ztest（13本、Phase 4-5+）|
+| `tests/firmware/wr_chunk/` `tests/firmware/wr_fifo/` `tests/firmware/wr_msc_mode/` | 純粋ロジック ztest 群（Phase 4-6+）|
+| `tests/bsim/`（将来）| Phase 6 で omi GATT を bsim で叩くシナリオ群を配置予定 |
+| `.github/workflows/build.yml` | firmware-build CI（NCS v2.7-branch、UF2 + ztest）|
+| `.github/workflows/bsim.yml` | BabbleSim smoke CI（manual trigger、Phase 5+ scaffold）|
+| `app_mobile/`（Flutter skeleton）| Phase 6 自前ミニマルスマホアプリの雛形（BLE スキャン → 接続 → audioCodec notify dump）|
+| `docs/bsim-setup.md` | bsim 設計メモ（CI 構成・将来の bsim test 配置）|
+| `docs/phase5-quickstart.md` | Phase 5 実機 bring-up 手順（けんたさん向け 3 分版）|
+| `docs/phase6-plan-draft.md` | Phase 6 着手 TODO ドラフト |
 
 ---
 
