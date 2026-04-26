@@ -15,6 +15,11 @@ jobs:
       # prj_xiao_ble_sense_devkitv1-spisd.conf. Stay on v2.7-branch until we
       # decide whether to upstream-patch omi or fork.
       image: nordicplayground/nrfconnect-sdk:v2.7-branch
+    env:
+      # Opt JS-based actions (checkout@v4, upload-artifact@v4, github-script@v7)
+      # into Node 24 ahead of the Node 20 deprecation deadline so we don't
+      # eat warning annotations on every run.
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
     defaults:
       run:
         shell: bash
@@ -151,6 +156,17 @@ jobs:
           echo "ZEPHYR_BASE=/workdir/zephyr" >> "$GITHUB_ENV"
           echo "$GCC_BIN_DIR" >> "$GITHUB_PATH"
 
+      - name: Cache ccache directory
+        # Placed AFTER submodule init + patches so hashFiles() can see the
+        # actual omi C sources. Container HOME is /github/home, so ccache
+        # defaults to /github/home/.ccache.
+        uses: actions/cache@v4
+        with:
+          path: /github/home/.ccache
+          key: ccache-${{ runner.os }}-${{ hashFiles('third_party/omi/**/*.c', 'app/src/**/*.c') }}
+          restore-keys: |
+            ccache-${{ runner.os }}-
+
       - name: Build firmware (omi devkit, DK1+SPISD)
         run: |
           set -e
@@ -161,6 +177,8 @@ jobs:
           which west cmake ninja arm-zephyr-eabi-gcc 2>&1 || true
           west --version 2>&1 || true
           arm-zephyr-eabi-gcc --version 2>&1 | head -1 || true
+          echo "ccache stats (pre-build):"
+          ccache -s || true
           echo "::endgroup::"
 
           # Build from /workdir (the pre-fetched NCS workspace) so west picks
@@ -177,6 +195,8 @@ jobs:
               -DOVERLAY_CONFIG="$GITHUB_WORKSPACE/app/overlay/spisd-fixup.conf"
           ls -la build/zephyr/ | head -20
           echo "BUILD_DIR=/workdir/build" >> "$GITHUB_ENV"
+          echo "ccache stats (post-build):"
+          ccache -s || true
 
       - name: Convert hex to UF2 (XIAO BLE bootloader, family 0xADA52840)
         run: |
@@ -220,3 +240,15 @@ jobs:
           path: /workdir/twister-out/
           if-no-files-found: warn
           retention-days: 30
+
+      - name: Deinit omi submodule before checkout post-cleanup
+        # actions/checkout@v4's post-job step always runs
+        # `git submodule foreach --recursive` to clean up sshCommand entries,
+        # ignoring the `submodules: false` setting we used at checkout. With
+        # third_party/omi initialised, that recurse hits omiGlass's broken
+        # nested .pio submodule reference and emits exit-code-128 noise.
+        # Deinitialising before the post step removes the recurse target.
+        if: always()
+        run: |
+          git config --global --add safe.directory '*'
+          git submodule deinit -f third_party/omi 2>/dev/null || true
