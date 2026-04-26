@@ -10,10 +10,6 @@
 #include "wr_led_pick.h"
 
 /* Helpers */
-static const struct wr_led_state IDLE = {
-	.batt_pct = 100,
-};
-
 #define ASSERT_RGB(rgb, R_, G_, B_) do { \
 	zassert_equal((rgb).r, (R_), "r mismatch: got %d want %d", (int)(rgb).r, (int)(R_)); \
 	zassert_equal((rgb).g, (G_), "g mismatch: got %d want %d", (int)(rgb).g, (int)(G_)); \
