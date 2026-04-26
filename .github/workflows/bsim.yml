@@ -1,0 +1,89 @@
+name: bsim-smoke
+
+# Manual-trigger only. See docs/bsim-setup.md for rationale (5+ min build time).
+# Once stable, consider adding `pull_request` for changes under tests/bsim/**.
+on:
+  workflow_dispatch:
+
+jobs:
+  bsim-smoke:
+    runs-on: ubuntu-latest
+    container:
+      image: nordicplayground/nrfconnect-sdk:v2.7-branch
+    defaults:
+      run:
+        shell: bash
+    env:
+      BSIM_OUT_PATH: /opt/bsim
+      BSIM_COMPONENTS_PATH: /opt/bsim/components
+      ZEPHYR_BASE: /workdir/zephyr
+    steps:
+      - name: Install bsim build deps
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends \
+            git ca-certificates make gcc g++ pkg-config \
+            libsdl2-dev libfftw3-dev libffi-dev \
+            python3 python3-pip
+
+      - name: Install west (needed for bsim manifest)
+        run: |
+          python3 -m pip install --quiet --user west
+          PIP_BIN="$(python3 -c 'import site; print(site.USER_BASE)')/bin"
+          echo "$PIP_BIN" >> "$GITHUB_PATH"
+          export PATH="$PIP_BIN:$PATH"
+          west --version
+
+      - name: Build BabbleSim
+        run: |
+          set -e
+          mkdir -p "$BSIM_OUT_PATH"
+          cd "$BSIM_OUT_PATH"
+          git config --global --add safe.directory '*'
+          git clone --depth=1 https://github.com/BabbleSim/babblesim-manifest.git .west/manifest
+          export PATH="$(python3 -c 'import site; print(site.USER_BASE)')/bin:$PATH"
+          west init -l .west/manifest
+          west update
+          make everything -j"$(nproc)"
+          ls -1 bin/ | head -10
+          echo "bsim built; phy binary:"
+          ls -la bin/bs_2G4_phy_v1
+
+      - name: Locate Zephyr toolchain (Nordic Toolchain Manager layout)
+        run: |
+          GCC=$(find /root/ncs/toolchains /opt /workdir /usr/local -maxdepth 8 -type f -name "arm-zephyr-eabi-gcc" 2>/dev/null | head -1)
+          if [ -z "$GCC" ]; then
+            echo "::error::No arm-zephyr-eabi-gcc found"
+            exit 1
+          fi
+          GCC_BIN_DIR=$(dirname "$GCC")
+          SDK_ROOT="$(dirname "$(dirname "$GCC_BIN_DIR")")"
+          echo "ZEPHYR_SDK_INSTALL_DIR=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ZEPHYR_TOOLCHAIN_VARIANT=zephyr" >> "$GITHUB_ENV"
+          echo "$GCC_BIN_DIR" >> "$GITHUB_PATH"
+
+      - name: Install Zephyr Python deps
+        run: |
+          if [ -f /workdir/zephyr/scripts/requirements.txt ]; then
+            python3 -m pip install --quiet --user -r /workdir/zephyr/scripts/requirements.txt
+          fi
+
+      - name: Smoke test — Zephyr-bundled bsim adv example
+        run: |
+          set -e
+          # Pick the smallest bsim test that builds + runs both roles.
+          # Path is from Zephyr v3.6 (NCS v2.7); update if NCS bumps.
+          TEST_DIR="$ZEPHYR_BASE/tests/bsim/bluetooth/host/adv/encrypted/css_sample_data"
+          if [ ! -d "$TEST_DIR" ]; then
+            echo "::warning::expected bsim test dir not found, listing tests/bsim/bluetooth/host/adv/"
+            ls -la "$ZEPHYR_BASE/tests/bsim/bluetooth/host/adv/" || true
+            echo "::error::bsim test path unavailable in this NCS revision — adjust workflow"
+            exit 1
+          fi
+          echo "::group::compile"
+          "$TEST_DIR/test_scripts/_compile.sh"
+          echo "::endgroup::"
+          echo "::group::run"
+          "$TEST_DIR/test_scripts/run_tests.sh"
+          echo "::endgroup::"
+          echo "smoke test PASSED"
