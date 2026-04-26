@@ -14,8 +14,12 @@ jobs:
       run:
         shell: bash
     env:
-      BSIM_OUT_PATH: /opt/bsim
-      BSIM_COMPONENTS_PATH: /opt/bsim/components
+      # bsim_west's manifest pins self.path: bsim and project paths
+      # under bsim/components/, so the workspace topdir nests one
+      # level: BSIM_OUT_PATH lives at <topdir>/bsim/.
+      BSIM_TOPDIR: /opt/bsim_ws
+      BSIM_OUT_PATH: /opt/bsim_ws/bsim
+      BSIM_COMPONENTS_PATH: /opt/bsim_ws/bsim/components
       ZEPHYR_BASE: /workdir/zephyr
     steps:
       - name: Install bsim build deps
@@ -39,21 +43,21 @@ jobs:
       - name: Build BabbleSim
         run: |
           set -e
-          mkdir -p "$BSIM_OUT_PATH"
-          cd "$BSIM_OUT_PATH"
+          mkdir -p "$BSIM_TOPDIR"
+          cd "$BSIM_TOPDIR"
           git config --global --add safe.directory '*'
           export PATH="$(python3 -c 'import site; print(site.USER_BASE)')/bin:$PATH"
           # bsim_west is the canonical west manifest repo for BabbleSim
-          # (see https://github.com/BabbleSim/bsim_west). Init in-place so
-          # workspace root === BSIM_OUT_PATH.
-          # ZEPHYR_BASE is set globally for this job (Zephyr workspace at
-          # /workdir), but west init/update must not see it or it'll
+          # (https://github.com/BabbleSim/bsim_west). Its west.yml pins
+          # self.path: bsim, so BSIM_OUT_PATH = $BSIM_TOPDIR/bsim/.
+          # ZEPHYR_BASE is set globally for this job (Zephyr workspace
+          # at /workdir), but west init/update must not see it or it'll
           # refuse with "already initialized in /workdir".
           env -u ZEPHYR_BASE west init -m https://github.com/BabbleSim/bsim_west.git .
           env -u ZEPHYR_BASE west update
-          # The driver Makefile lives under base/common/ (mounted at
-          # components/common/ after west update). Run it explicitly to
-          # avoid relying on the stub Makefile in the manifest root.
+          test -f "$BSIM_OUT_PATH/components/common/Makefile" \
+            || { echo "::error::driver Makefile missing — manifest layout changed?"; exit 1; }
+          cd "$BSIM_OUT_PATH"
           make -f components/common/Makefile everything -j"$(nproc)"
           ls -1 bin/ | head -10
           echo "bsim built; phy binary:"
