@@ -24,7 +24,12 @@ jobs:
       - name: Checkout app + omi submodule
         uses: actions/checkout@v4
         with:
-          submodules: recursive
+          # 'true' = top-level submodules only (omi). 'recursive' fails because
+          # omi has a broken nested submodule reference under
+          # omiGlass/firmware/.pio/libdeps that's missing from .gitmodules.
+          # Devkit firmware (omi/firmware/devkit) needs no nested submodules
+          # — Opus is vendored as source under src/lib/opus-1.2.1/.
+          submodules: true
           path: app
 
       - name: Diagnose container workspace
