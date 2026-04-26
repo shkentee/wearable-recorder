@@ -127,6 +127,29 @@ jobs:
       - name: Resolve dependencies
         run: flutter pub get
 
+      - name: Patch flutter_blue_plus_android build.gradle for Flutter 3.24 scaffold
+        # flutter_blue_plus ^1.32.12 transitively pulls flutter_blue_plus_android
+        # 7.0.4, whose android/build.gradle does:
+        #
+        #     android { compileSdkVersion = flutter.compileSdkVersion }
+        #
+        # The `flutter` android-extension property is no longer provided by the
+        # scaffolding that `flutter create` generates on Flutter 3.24+, so the
+        # build dies with:
+        #
+        #     Could not get unknown property 'flutter' for extension 'android'
+        #
+        # Hard-pin the literal value (matching Flutter 3.24's default
+        # compileSdk = 34) directly in the cached plugin source. Bumping
+        # flutter_blue_plus to 2.x would also fix this but introduces a
+        # required `license` API parameter that breaks our lib/.
+        run: |
+          PLUGIN_GRADLE="$HOME/.pub-cache/hosted/pub.dev/flutter_blue_plus_android-7.0.4/android/build.gradle"
+          test -f "$PLUGIN_GRADLE" || { echo "Plugin gradle not found at $PLUGIN_GRADLE"; ls -la "$HOME/.pub-cache/hosted/pub.dev/" | grep flutter_blue_plus || true; exit 1; }
+          sed -i 's/compileSdkVersion = flutter\.compileSdkVersion/compileSdkVersion = 34/' "$PLUGIN_GRADLE"
+          echo '--- patched flutter_blue_plus_android/android/build.gradle ---'
+          cat "$PLUGIN_GRADLE"
+
       - name: Static analysis (after scaffold so generated files are checked too)
         run: flutter analyze
 
