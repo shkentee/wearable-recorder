@@ -1,0 +1,3 @@
+[submodule "third_party/omi"]
+	path = third_party/omi
+	url = https://github.com/BasedHardware/omi

@@ -1,0 +1,27 @@
+# West manifest for wearable-recorder
+#
+# Imports nRF Connect SDK v2.9.0 which transitively pulls in Zephyr,
+# modules (FATFS, ZCBOR, etc.), nrfxlib, MCUboot, and the toolchain
+# integration needed to build for xiao_ble/nrf52840/sense.
+#
+# omi sources are vendored under third_party/omi/ as a git submodule.
+#
+# Usage:
+#   west init -l .
+#   west update --narrow -o=--depth=1
+#   west build -b xiao_ble/nrf52840/sense \
+#     third_party/omi/omi/firmware/devkit \
+#     -- -DCONF_FILE=prj_xiao_ble_sense_devkitv1-spisd.conf
+manifest:
+  version: "0.13"
+
+  remotes:
+    - name: nrfconnect
+      url-base: https://github.com/nrfconnect
+
+  projects:
+    - name: nrf
+      remote: nrfconnect
+      repo-path: sdk-nrf
+      revision: v2.9.0
+      import: true
