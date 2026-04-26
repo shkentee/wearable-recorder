@@ -2,7 +2,7 @@ diff --git a/omi/firmware/devkit/CMakeLists.txt b/omi/firmware/devkit/CMakeLists
 index 9dbba5f..3341b9c 100644
 --- a/omi/firmware/devkit/CMakeLists.txt
 +++ b/omi/firmware/devkit/CMakeLists.txt
-@@ -19,6 +19,18 @@ target_sources(app PRIVATE
+@@ -19,6 +19,19 @@ target_sources(app PRIVATE
      src/usb.c
      src/wdog_facade.c
  	# src/nfc.c future release
@@ -11,6 +11,7 @@ index 9dbba5f..3341b9c 100644
 +    # relative to this CMakeLists, walking up from
 +    # third_party/omi/omi/firmware/devkit to the wearable-recorder root.
 +    ${CMAKE_CURRENT_SOURCE_DIR}/../../../../../app/src/wr_chunk.c
++    ${CMAKE_CURRENT_SOURCE_DIR}/../../../../../app/src/wr_chunk_logic.c
 +    ${CMAKE_CURRENT_SOURCE_DIR}/../../../../../app/src/wr_fifo.c
 +    ${CMAKE_CURRENT_SOURCE_DIR}/../../../../../app/src/wr_led_status.c
 +    ${CMAKE_CURRENT_SOURCE_DIR}/../../../../../app/src/wr_led_pick.c

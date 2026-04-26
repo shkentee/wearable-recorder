@@ -20,6 +20,8 @@
 #include <zephyr/logging/log.h>
 #include <stdio.h>
 
+#include "wr_chunk_logic.h"
+
 LOG_MODULE_REGISTER(wr_chunk, CONFIG_LOG_DEFAULT_LEVEL);
 
 /* Mutex shared with transport.c's write_to_storage(). */
@@ -27,7 +29,6 @@ extern struct k_mutex write_sdcard_mutex;
 
 #define WR_CHUNK_PERIOD_MS (10 * 60 * 1000)
 #define WR_CHUNK_ACTIVE_PATH "/SD:/audio/a01.txt"
-#define WR_CHUNK_DIR "/SD:/audio"
 
 static struct k_timer wr_chunk_timer;
 static struct k_work wr_chunk_work;
@@ -44,8 +45,7 @@ static void wr_chunk_rotate(struct k_work *w)
 	struct fs_dirent dirent;
 
 	for (int attempt = 0; attempt < 1000; attempt++) {
-		snprintf(target, sizeof(target), WR_CHUNK_DIR "/chunk_%05u.opus",
-			 (unsigned)wr_chunk_seq);
+		(void)wr_chunk_format_name(wr_chunk_seq, target, sizeof(target));
 		if (fs_stat(target, &dirent) != 0) {
 			break;
 		}
@@ -55,7 +55,7 @@ static void wr_chunk_rotate(struct k_work *w)
 	k_mutex_lock(&write_sdcard_mutex, K_FOREVER);
 
 	ret = fs_stat(WR_CHUNK_ACTIVE_PATH, &dirent);
-	if (ret != 0 || dirent.size == 0) {
+	if (!wr_chunk_should_rotate(ret, dirent.size)) {
 		LOG_INF("wr_chunk: skip rotation (active file missing or empty)");
 		goto unlock;
 	}
