@@ -159,8 +159,9 @@ jobs:
       - name: Convert hex to UF2 (XIAO BLE bootloader, family 0xADA52840)
         run: |
           set -e
-          curl -sSL https://raw.githubusercontent.com/microsoft/uf2/master/utils/uf2conv.py -o /tmp/uf2conv.py
-          curl -sSL https://raw.githubusercontent.com/microsoft/uf2/master/utils/uf2families.json -o /tmp/uf2families.json
+          # The container has wget (we installed it) but not curl.
+          wget -qO /tmp/uf2conv.py https://raw.githubusercontent.com/microsoft/uf2/master/utils/uf2conv.py
+          wget -qO /tmp/uf2families.json https://raw.githubusercontent.com/microsoft/uf2/master/utils/uf2families.json
           python3 /tmp/uf2conv.py "$BUILD_DIR/zephyr/zephyr.hex" -c -f 0xADA52840 -o "$BUILD_DIR/firmware.uf2"
           ls -la "$BUILD_DIR/firmware.uf2" "$BUILD_DIR/zephyr/zephyr.hex" "$BUILD_DIR/zephyr/zephyr.elf"
 
