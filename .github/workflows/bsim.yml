@@ -124,11 +124,17 @@ jobs:
             -p always \
             -d "$GITHUB_WORKSPACE/build_bsim_smoke" \
             "$GITHUB_WORKSPACE/tests/bsim/wr_smoke"
-          ls -la "$GITHUB_WORKSPACE/build_bsim_smoke/zephyr/" | head -10
-          # The bsim build produces a native ELF, not a hex.
-          test -f "$GITHUB_WORKSPACE/build_bsim_smoke/zephyr/zephyr.exe" \
-            || { echo "::error::expected zephyr.exe not found"; exit 1; }
-          file "$GITHUB_WORKSPACE/build_bsim_smoke/zephyr/zephyr.exe"
-          echo "wr_smoke compile: OK"
+          ls "$GITHUB_WORKSPACE/build_bsim_smoke/zephyr/" | head -20
+          # The bsim build produces zephyr.elf via NCS's native_simulator
+          # runner. Both names are valid output checks across NCS revs.
+          ELF="$GITHUB_WORKSPACE/build_bsim_smoke/zephyr/zephyr.elf"
+          EXE="$GITHUB_WORKSPACE/build_bsim_smoke/zephyr/zephyr.exe"
+          if [ -f "$ELF" ] || [ -f "$EXE" ]; then
+            ls -la "$ELF" "$EXE" 2>/dev/null || true
+            echo "wr_smoke compile: OK"
+          else
+            echo "::error::no zephyr.elf or zephyr.exe produced"
+            exit 1
+          fi
           echo "Phase 6 TODO: add a second test that runs the binary against"
           echo "bs_2G4_phy_v1 + a central peer to actually exercise the link."
