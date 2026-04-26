@@ -61,6 +61,11 @@ void main() {
   group('WrDriveUploader.uploadFile', () {
     // ------------------------------------------------------------------
     // Scenario 1: folder does not exist yet — should create it, then upload.
+    //
+    // Note: in mocktail, any(named:'x') matches null (absent named arg), so
+    // a stub with uploadMedia: any(named:...) also intercepts folder-create
+    // calls (which omit uploadMedia). We use a single stub that dispatches on
+    // uploadMedia presence to avoid the two-stub ambiguity.
     // ------------------------------------------------------------------
     test(
         'creates folder when none exists and uploads with correct MIME type',
@@ -72,18 +77,18 @@ void main() {
             $fields: any(named: r'$fields'),
           )).thenAnswer((_) async => drive.FileList()..files = []);
 
-      // First create() = folder, second create() = uploaded file.
-      // Capture uploadMedia via thenAnswer to avoid the two-captureAny pitfall
-      // (verify with captureAny for a named arg also matches calls that omit
-      // the arg, producing null in the captured list).
-      when(() => mockFiles.create(any()))
-          .thenAnswer((_) async => drive.File()..id = 'folder-id-123');
+      var folderCreated = false;
       drive.Media? capturedMedia;
       when(() => mockFiles.create(
             any(),
             uploadMedia: any(named: 'uploadMedia'),
           )).thenAnswer((inv) async {
-        capturedMedia = inv.namedArguments[#uploadMedia] as drive.Media;
+        final uploadMedia = inv.namedArguments[#uploadMedia];
+        if (uploadMedia == null) {
+          folderCreated = true;
+          return drive.File()..id = 'folder-id-123';
+        }
+        capturedMedia = uploadMedia as drive.Media;
         return drive.File()..id = 'file-id-abc';
       });
 
@@ -93,6 +98,7 @@ void main() {
       final fileId = await uploader.uploadFile(dumpFile, 'session-0001.opus');
 
       expect(fileId, 'file-id-abc');
+      expect(folderCreated, true);
 
       // list() must have been called to look for the folder.
       verify(() => mockFiles.list(
@@ -121,10 +127,18 @@ void main() {
         (_) async => drive.FileList()..files = [existingFolder],
       );
 
+      var folderCreateCount = 0;
       when(() => mockFiles.create(
             any(),
             uploadMedia: any(named: 'uploadMedia'),
-          )).thenAnswer((_) async => drive.File()..id = 'uploaded-file-id');
+          )).thenAnswer((inv) async {
+        final uploadMedia = inv.namedArguments[#uploadMedia];
+        if (uploadMedia == null) {
+          folderCreateCount++;
+          return drive.File()..id = 'should-not-happen';
+        }
+        return drive.File()..id = 'uploaded-file-id';
+      });
 
       final dumpFile = await _tempOpusFile();
       final uploader = WrDriveUploader.withApi(mockApi);
@@ -132,8 +146,8 @@ void main() {
       final fileId = await uploader.uploadFile(dumpFile, 'session.opus');
       expect(fileId, 'uploaded-file-id');
 
-      // Folder create (no uploadMedia) must NOT be called.
-      verifyNever(() => mockFiles.create(any()));
+      // Folder create must NOT have been called.
+      expect(folderCreateCount, 0);
     });
 
     // ------------------------------------------------------------------
@@ -154,7 +168,9 @@ void main() {
       when(() => mockFiles.create(
             any(),
             uploadMedia: any(named: 'uploadMedia'),
-          )).thenAnswer((_) async {
+          )).thenAnswer((inv) async {
+        final uploadMedia = inv.namedArguments[#uploadMedia];
+        if (uploadMedia == null) return drive.File()..id = 'folder-cached';
         uploadCount++;
         return drive.File()..id = 'f-$uploadCount';
       });
@@ -190,7 +206,11 @@ void main() {
       when(() => mockFiles.create(
             any(),
             uploadMedia: any(named: 'uploadMedia'),
-          )).thenAnswer((_) async => drive.File()); // id == null
+          )).thenAnswer((inv) async {
+        final uploadMedia = inv.namedArguments[#uploadMedia];
+        if (uploadMedia == null) return drive.File()..id = 'folder-x';
+        return drive.File(); // id == null
+      });
 
       final dumpFile = await _tempOpusFile();
       final uploader = WrDriveUploader.withApi(mockApi);
@@ -229,6 +249,7 @@ void main() {
     // Scenario 6: remoteFileName is stored as the Drive file name.
     // ------------------------------------------------------------------
     test('sets correct remote file name in Drive metadata', () async {
+      // Folder already exists — only the upload create is called.
       final existingFolder = drive.File()..id = 'f-folder';
       when(() => mockFiles.list(
             q: any(named: 'q'),
@@ -243,6 +264,8 @@ void main() {
             any(),
             uploadMedia: any(named: 'uploadMedia'),
           )).thenAnswer((invocation) async {
+        final uploadMedia = invocation.namedArguments[#uploadMedia];
+        if (uploadMedia == null) return drive.File()..id = 'f-folder';
         capturedMeta = invocation.positionalArguments.first as drive.File;
         return drive.File()..id = 'new-id';
       });
