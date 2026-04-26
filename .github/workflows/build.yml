@@ -1,0 +1,103 @@
+name: firmware-build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: nordicplayground/nrfconnect-sdk:v2.9-branch
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout app + omi submodule
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          path: app
+
+      - name: Diagnose container workspace
+        run: |
+          set -e
+          echo "::group::env"
+          echo "HOME=$HOME"
+          echo "ZEPHYR_BASE=$ZEPHYR_BASE"
+          echo "ZEPHYR_TOOLCHAIN_VARIANT=$ZEPHYR_TOOLCHAIN_VARIANT"
+          echo "PATH=$PATH"
+          echo "::endgroup::"
+          echo "::group::which tools"
+          which west cmake ninja python3 arm-zephyr-eabi-gcc 2>&1 || true
+          west --version 2>&1 || true
+          cmake --version 2>&1 | head -1 || true
+          python3 --version 2>&1 || true
+          arm-zephyr-eabi-gcc --version 2>&1 | head -1 || true
+          echo "::endgroup::"
+          echo "::group::workspace layout"
+          for p in /workdir /workdir/ncs /workdir/zephyr /opt/nordic /root/ncs /root; do
+            if [ -e "$p" ]; then echo "EXISTS: $p"; ls -la "$p" 2>&1 | head -10; fi
+          done
+          echo "::endgroup::"
+          echo "::group::west list (if a workspace exists)"
+          # Try common workspace roots
+          for d in /workdir /workdir/ncs /opt/nordic/ncs /root/ncs; do
+            if [ -e "$d/.west" ] || [ -e "$d/west.yml" ]; then
+              echo "trying west list from $d"
+              (cd "$d" && west list 2>&1 | head -40) || true
+            fi
+          done
+          # If ZEPHYR_BASE is set, try its parent
+          if [ -n "$ZEPHYR_BASE" ] && [ -e "$ZEPHYR_BASE" ]; then
+            parent=$(dirname "$ZEPHYR_BASE")
+            echo "trying west list from $parent (ZEPHYR_BASE parent)"
+            (cd "$parent" && west list 2>&1 | head -40) || true
+          fi
+          echo "::endgroup::"
+          echo "::group::checked-out app"
+          ls -la app/ | head -10
+          echo "submodule devkit:"
+          ls app/third_party/omi/omi/firmware/devkit/ 2>&1 | head -10
+          echo "::endgroup::"
+
+      - name: Build firmware (omi devkit, DK1+SPISD)
+        run: |
+          set -e
+          # Resolve workspace root from ZEPHYR_BASE if set (container pre-installs NCS)
+          if [ -z "$ZEPHYR_BASE" ]; then
+            echo "ZEPHYR_BASE not set; aborting until container layout is known" >&2
+            exit 1
+          fi
+          WORKSPACE_ROOT="$(dirname "$ZEPHYR_BASE")"
+          echo "Using workspace at $WORKSPACE_ROOT"
+          cd "$WORKSPACE_ROOT"
+          west build \
+            -b xiao_ble/nrf52840/sense \
+            -p always \
+            "$GITHUB_WORKSPACE/app/third_party/omi/omi/firmware/devkit" \
+            -- -DCONF_FILE=prj_xiao_ble_sense_devkitv1-spisd.conf
+          ls -la build/zephyr/ | head -20
+          echo "BUILD_DIR=$WORKSPACE_ROOT/build" >> "$GITHUB_ENV"
+
+      - name: Convert hex to UF2 (XIAO BLE bootloader, family 0xADA52840)
+        run: |
+          set -e
+          curl -sSL https://raw.githubusercontent.com/microsoft/uf2/master/utils/uf2conv.py -o /tmp/uf2conv.py
+          curl -sSL https://raw.githubusercontent.com/microsoft/uf2/master/utils/uf2families.json -o /tmp/uf2families.json
+          python3 /tmp/uf2conv.py "$BUILD_DIR/zephyr/zephyr.hex" -c -f 0xADA52840 -o "$BUILD_DIR/firmware.uf2"
+          ls -la "$BUILD_DIR/firmware.uf2" "$BUILD_DIR/zephyr/zephyr.hex" "$BUILD_DIR/zephyr/zephyr.elf"
+
+      - name: Upload firmware artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-xiao-ble-${{ github.sha }}
+          path: |
+            ${{ env.BUILD_DIR }}/zephyr/zephyr.hex
+            ${{ env.BUILD_DIR }}/zephyr/zephyr.elf
+            ${{ env.BUILD_DIR }}/zephyr/zephyr.map
+            ${{ env.BUILD_DIR }}/firmware.uf2
+          if-no-files-found: error
+          retention-days: 30
