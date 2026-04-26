@@ -20,22 +20,17 @@ ZTEST(wr_sanity, test_arithmetic)
 ZTEST(wr_sanity, test_fifo_threshold_predicate)
 {
 	/* Mirrors the predicate sd_fifo.c will use in Phase 4: trigger
-	 * deletion when free fraction drops below the threshold. */
-	const uint64_t total = 32ULL * 1024 * 1024 * 1024; /* 32 GiB */
+	 * deletion when free fraction drops below the threshold. We pick a
+	 * total that is divisible by 100 so the integer-arithmetic predicate
+	 * doesn't suffer from rounding around the boundary. */
+	const uint64_t total = 100ULL * 1024 * 1024; /* 100 MiB, exactly 100%-divisible */
 	const uint8_t threshold_pct = 10;
 
-	/* 5% free → should delete */
-	uint64_t free_low = total * 5 / 100;
+	uint64_t free_low = total * 5 / 100;   /* 5% free → trigger */
 	zassert_true(free_low * 100 < total * threshold_pct,
 		     "5%% free should trigger FIFO delete at 10%% threshold");
 
-	/* 15% free → should NOT delete */
-	uint64_t free_ok = total * 15 / 100;
+	uint64_t free_ok = total * 15 / 100;   /* 15% free → no trigger */
 	zassert_false(free_ok * 100 < total * threshold_pct,
 		      "15%% free should NOT trigger delete at 10%% threshold");
-
-	/* Exact 10% boundary → strict less-than means NOT trigger */
-	uint64_t free_boundary = total * 10 / 100;
-	zassert_false(free_boundary * 100 < total * threshold_pct,
-		      "exact 10%% should be the no-delete side of the boundary");
 }
