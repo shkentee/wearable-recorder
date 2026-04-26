@@ -17,11 +17,15 @@
 
 #include <zephyr/bluetooth/gatt.h>
 
+#define WR_LINK_BURST_COUNT 5
+#define WR_LINK_BURST_INTERVAL_MS 50
+
 DEFINE_FLAG(flag_peer_connected);
 DEFINE_FLAG(flag_notify_sent);
 
 static struct bt_conn *peer_conn;
 static struct k_work_delayable notify_work;
+static uint16_t notify_seq;
 
 static const struct bt_data ad[] = {
 	BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
@@ -58,16 +62,34 @@ static void notify_worker(struct k_work *work)
 		return;
 	}
 
-	const uint8_t payload[] = WR_LINK_PROBE_PAYLOAD;
+	/* Build a packet whose first 2 bytes are the LE16 sequence id;
+	 * mirrors omi audio packet header layout (packet_id + frame_id +
+	 * payload). The central counts how many it sees, so we just need
+	 * each one to be a legal payload. */
+	uint8_t payload[] = WR_LINK_PROBE_PAYLOAD;
+	payload[0] = (uint8_t)(notify_seq & 0xff);
+	payload[1] = (uint8_t)((notify_seq >> 8) & 0xff);
+
 	int err = bt_gatt_notify(peer_conn, &audio_svc.attrs[1],
 				 payload, sizeof(payload));
 	if (err) {
-		FAIL("peripheral: bt_gatt_notify failed (%d)\n", err);
+		FAIL("peripheral: bt_gatt_notify[%u] failed (%d)\n",
+		     notify_seq, err);
 		return;
 	}
-	bs_trace_info_time(1, "peripheral: sent %u byte notify\n",
-			   (unsigned)sizeof(payload));
-	SET_FLAG(flag_notify_sent);
+	bs_trace_info_time(1, "peripheral: sent notify #%u (%u bytes)\n",
+			   notify_seq, (unsigned)sizeof(payload));
+	notify_seq++;
+
+	if (notify_seq < WR_LINK_BURST_COUNT) {
+		k_work_schedule(&notify_work,
+				K_MSEC(WR_LINK_BURST_INTERVAL_MS));
+	} else {
+		bs_trace_info_time(1,
+			"peripheral: burst complete (%u packets)\n",
+			WR_LINK_BURST_COUNT);
+		SET_FLAG(flag_notify_sent);
+	}
 }
 
 static void peripheral_connected(struct bt_conn *conn, uint8_t err)

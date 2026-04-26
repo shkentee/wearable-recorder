@@ -15,11 +15,14 @@
 
 #include <zephyr/bluetooth/gatt.h>
 
+#define WR_LINK_EXPECT_NOTIFY_COUNT 5
+
 DEFINE_FLAG(flag_central_connected);
 DEFINE_FLAG(flag_audio_subscribed);
 DEFINE_FLAG(flag_notify_received);
 
 static struct bt_conn *default_conn;
+static uint32_t notify_received_count;
 
 static struct bt_gatt_discover_params discover_params;
 static struct bt_gatt_subscribe_params sub_params;
@@ -34,10 +37,18 @@ static uint8_t notify_cb(struct bt_conn *conn,
 		bs_trace_info_time(1, "central: subscription tore down\n");
 		return BT_GATT_ITER_STOP;
 	}
-	bs_trace_info_time(1, "central: notify received (%u bytes)\n",
-			   (unsigned)length);
-	SET_FLAG(flag_notify_received);
-	return BT_GATT_ITER_STOP;
+	notify_received_count++;
+	bs_trace_info_time(1,
+		"central: notify #%u received (%u bytes, total=%u)\n",
+		(length >= 2 ? ((const uint8_t *)data)[0] |
+			       ((const uint8_t *)data)[1] << 8 : 0),
+		(unsigned)length, notify_received_count);
+
+	if (notify_received_count >= WR_LINK_EXPECT_NOTIFY_COUNT) {
+		SET_FLAG(flag_notify_received);
+		return BT_GATT_ITER_STOP;
+	}
+	return BT_GATT_ITER_CONTINUE;
 }
 
 static uint8_t discover_cb(struct bt_conn *conn,
@@ -185,5 +196,6 @@ void wr_run_central(void)
 	WAIT_FOR_FLAG(flag_central_connected);
 	WAIT_FOR_FLAG(flag_audio_subscribed);
 	WAIT_FOR_FLAG(flag_notify_received);
-	PASS("central: link + audio notify received\n");
+	PASS("central: link + %u-packet audio notify burst received\n",
+	     WR_LINK_EXPECT_NOTIFY_COUNT);
 }
