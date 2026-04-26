@@ -103,3 +103,90 @@ pytest -v
 
 The same test runs on every PR that touches `tools/**` via
 `.github/workflows/tools.yml`.
+
+## power-predict.py
+
+Predicts average current draw and battery life from per-subsystem mA /
+duty assumptions. Pre-Phase 5 (no PPK2 hardware yet) this is the
+reference for whether the spec section 14.2 estimate of
+**3.2-3.7mA / 200mAh -> 54-63h** still holds as we iterate on firmware.
+
+Pure stdlib (`argparse`, `json`, `dataclasses`, `math`) — no third-party
+deps, runs in the same minimal CI image as `decode-dump.py`.
+
+### Model
+
+```
+avg = (pdm_active_ma + codec_active_ma + ble_tx_avg_ma) * record_duty
+    + sd_active_ma * sd_write_duty
+    + led_avg_ma
+    + mcu_idle_ma * (1 - record_duty)
+hours = battery_mah / max(avg - charging_ma, 0)
+```
+
+The PDM mic, Opus encoder, and BLE radio share `record_duty` because
+the firmware gates them as one pipeline (when recording is paused, all
+three sleep together). SD writes have their own `sd_write_duty` knob.
+
+### Usage
+
+```bash
+# Spec defaults (200mAh, always-on record, 5% SD duty)
+python tools/power-predict.py
+
+# What-if: 150mAh cell, 80% record duty, +0.5mA BLE overhead
+python tools/power-predict.py \
+    --battery-mah 150 --record-duty 0.8 --ble-tx-avg-ma 1.7
+
+# Machine-readable output for downstream tooling
+python tools/power-predict.py --json
+
+# CI guard mode: exit 1 if predicted runtime is below the target
+python tools/power-predict.py --fail-under-target --target-hours 20
+```
+
+### Defaults
+
+| knob | default | source |
+|------|---------|--------|
+| `battery-mah`     | 200    | spec D5 (採用) |
+| `pdm-active-ma`   | 1.5    | DK1 baseline split |
+| `codec-active-ma` | 0.8    | DK1 baseline split |
+| `ble-tx-avg-ma`   | 1.2    | DK1 baseline split |
+| `sd-active-ma`    | 4.0    | SanDisk Ultra burst |
+| `sd-write-duty`   | 0.05   | Plan B 5% bursts |
+| `mcu-idle-ma`     | 0.005  | nRF52 sleep mode |
+| `record-duty`     | 1.0    | always recording |
+| `led-avg-ma`      | 0.01   | heartbeat 1% duty |
+| `charging-ma`     | 0.0    | unplugged |
+
+With those defaults the script reports **3.71 mA average / ~53.9 h /
+2.25 days**, well above the 20h project target — the same ballpark as
+spec section 14.2's hand calculation.
+
+### Output
+
+Two formats:
+
+- Human-readable (default): aligned table with per-subsystem mA, the
+  percentage each contributes, predicted hours/days, and a `PASS`/`FAIL`
+  verdict against `--target-hours` (default `20`, from spec 14.3).
+- JSON (`--json`): nested object with `inputs` and `prediction`. Use
+  this from other scripts so the human format can evolve freely.
+
+### Phase 5 plan
+
+Once the PPK2 (or Joulescope) measurements arrive, the per-subsystem
+`*_ma` defaults get re-tuned in this file and the spec section 14.2
+table updated to match. The pytest suite (`test_power_predict.py`)
+asserts on the *shape* of the model (linearity, duty scaling, no
+divide-by-zero) so retuning numbers won't break CI as long as the
+algebra is intact.
+
+## test_power_predict.py
+
+Pytest suite for the predictor. Same `pytest -v` invocation picks it
+up. Covers default-case agreement with spec 14.2, linear scaling vs
+battery capacity / record duty, the SD duty stress case, the
+all-zero divide-by-zero guard, and the `--fail-under-target` CI
+exit-code contract.
