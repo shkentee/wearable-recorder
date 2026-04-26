@@ -38,14 +38,15 @@ jobs:
           python3 --version
           python3 -m pip --version
 
-      - name: Checkout app (without submodules)
+      - name: Checkout repo (without submodules)
         uses: actions/checkout@v4
         with:
           submodules: false
-          path: app
+          # No 'path:' — land at $GITHUB_WORKSPACE so refs match the
+          # repo layout (avoids 'app/app/overlay/...' confusion since the
+          # repo already has its own app/ subdirectory).
 
       - name: Init omi submodule manually (no recursion)
-        working-directory: app
         run: |
           # actions/checkout's 'submodules: true' still recurses into omi's
           # internal submodules and trips on a broken reference under
@@ -57,7 +58,6 @@ jobs:
           ls third_party/omi/omi/firmware/devkit/ | head -5
 
       - name: Patch omi prj.conf typo (CONFIG_OMI_OFFLINE_STORAGE → OMI_ENABLE_OFFLINE_STORAGE)
-        working-directory: app
         run: |
           # omi's Kconfig defines `OMI_ENABLE_OFFLINE_STORAGE` but the
           # devkit prj.conf still references the older name
@@ -149,7 +149,7 @@ jobs:
           west build \
             -b xiao_ble/nrf52840/sense \
             -p always \
-            "$GITHUB_WORKSPACE/app/third_party/omi/omi/firmware/devkit" \
+            "$GITHUB_WORKSPACE/third_party/omi/omi/firmware/devkit" \
             -- \
               -DCONF_FILE=prj_xiao_ble_sense_devkitv1-spisd.conf \
               -DOVERLAY_CONFIG="$GITHUB_WORKSPACE/app/overlay/spisd-fixup.conf"
