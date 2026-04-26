@@ -5,7 +5,7 @@
  * the "is one name older than another" comparison can be unit-tested
  * under native_sim without dragging in fs_*, statvfs, or k_timer.
  *
- * The runtime side (wr_fifo.c) wraps these with the actual fs_*/statvfs
+ * The runtime side (wr_fifo.c) wraps these with the actual fs_ / statvfs
  * calls and SD-mutex handling.
  */
 
