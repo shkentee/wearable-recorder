@@ -21,8 +21,10 @@ jobs:
       - name: Install bsim build deps
         run: |
           apt-get update -qq
+          # gcc-multilib pulls 32-bit headers required by the bsim
+          # device binaries (see https://babblesim.github.io/fetching.html).
           apt-get install -y -qq --no-install-recommends \
-            git ca-certificates make gcc g++ pkg-config \
+            git ca-certificates make gcc g++ gcc-multilib pkg-config \
             libsdl2-dev libfftw3-dev libffi-dev \
             python3 python3-pip
 
@@ -40,11 +42,16 @@ jobs:
           mkdir -p "$BSIM_OUT_PATH"
           cd "$BSIM_OUT_PATH"
           git config --global --add safe.directory '*'
-          git clone --depth=1 https://github.com/BabbleSim/babblesim-manifest.git .west/manifest
           export PATH="$(python3 -c 'import site; print(site.USER_BASE)')/bin:$PATH"
-          west init -l .west/manifest
+          # bsim_west is the canonical west manifest repo for BabbleSim
+          # (see https://github.com/BabbleSim/bsim_west). Init in-place so
+          # workspace root === BSIM_OUT_PATH.
+          west init -m https://github.com/BabbleSim/bsim_west.git .
           west update
-          make everything -j"$(nproc)"
+          # The driver Makefile lives under base/common/ (mounted at
+          # components/common/ after west update). Run it explicitly to
+          # avoid relying on the stub Makefile in the manifest root.
+          make -f components/common/Makefile everything -j"$(nproc)"
           ls -1 bin/ | head -10
           echo "bsim built; phy binary:"
           ls -la bin/bs_2G4_phy_v1
