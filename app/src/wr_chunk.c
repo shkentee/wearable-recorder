@@ -1,17 +1,22 @@
 /*
- * Phase 4-2 MVP: 10-minute file rotation on top of omi's single-file SD
- * design (which writes everything to /SD:/audio/a01.txt).
+ * Phase 4-2 MVP: file rotation on top of omi's single-file SD design
+ * (which writes everything to /SD:/audio/a01.txt).
  *
- * On a 10-minute timer we lock omi's write_sdcard_mutex, fs_rename
- * a01.txt to chunk_<seq>.opus, and recreate an empty a01.txt so omi can
- * keep appending without changes.
+ * Rotation triggers (whichever fires first):
+ *   - 10-minute periodic timer
+ *   - active file size reaches WR_CHUNK_SIZE_LIMIT_BYTES (2 MB)
  *
- * Not implemented yet (deferred to Phase 6 along with proper BLE storage
- * sync redesign):
+ * On trigger we lock omi's write_sdcard_mutex, fs_rename a01.txt to
+ * chunk_<seq>.opus, and recreate an empty a01.txt so omi can keep
+ * appending without changes.
+ *
+ * Not implemented yet (deferred along with proper BLE storage sync
+ * redesign):
  *   - UNIX_epoch.opus naming (needs RTC time-sync awareness)
  *   - unsynced_<bootid>_<seq>.opus fallback when not yet time-synced
  *   - persistent boot ID
- *   - 2.4MB size-based rotation in addition to time-based
+ * The pure helpers for these already live in wr_chunk_logic.{c,h} and
+ * have ztest coverage.
  */
 
 #include <zephyr/fs/fs.h>
@@ -27,12 +32,16 @@ LOG_MODULE_REGISTER(wr_chunk, CONFIG_LOG_DEFAULT_LEVEL);
 /* Mutex shared with transport.c's write_to_storage(). */
 extern struct k_mutex write_sdcard_mutex;
 
-#define WR_CHUNK_PERIOD_MS (10 * 60 * 1000)
-#define WR_CHUNK_ACTIVE_PATH "/SD:/audio/a01.txt"
+#define WR_CHUNK_PERIOD_MS         (10 * 60 * 1000)
+#define WR_CHUNK_SIZE_POLL_MS      (30 * 1000) /* sample size every 30 s */
+#define WR_CHUNK_ACTIVE_PATH       "/SD:/audio/a01.txt"
+#define WR_CHUNK_SIZE_LIMIT_BYTES  (2ULL * 1024ULL * 1024ULL) /* 2 MB */
 
 static struct k_timer wr_chunk_timer;
-static struct k_work wr_chunk_work;
-static uint32_t wr_chunk_seq;
+static struct k_timer wr_chunk_size_timer;
+static struct k_work  wr_chunk_work;
+static struct k_work  wr_chunk_size_check_work;
+static uint32_t       wr_chunk_seq;
 
 static void wr_chunk_rotate(struct k_work *w)
 {
@@ -60,6 +69,12 @@ static void wr_chunk_rotate(struct k_work *w)
 		goto unlock;
 	}
 
+	if (wr_chunk_should_rotate_size(dirent.size, WR_CHUNK_SIZE_LIMIT_BYTES)) {
+		LOG_INF("wr_chunk: size threshold %llu B reached (file=%llu B)",
+			(unsigned long long)WR_CHUNK_SIZE_LIMIT_BYTES,
+			(unsigned long long)dirent.size);
+	}
+
 	ret = fs_rename(WR_CHUNK_ACTIVE_PATH, target);
 	if (ret != 0) {
 		LOG_ERR("wr_chunk: fs_rename %s -> %s failed (%d)",
@@ -85,20 +100,53 @@ unlock:
 	k_mutex_unlock(&write_sdcard_mutex);
 }
 
+/* Periodically inspect the active file's size and submit the rotate
+ * work item when the size threshold is reached. Runs off-ISR so we can
+ * safely call fs_stat. */
+static void wr_chunk_size_check(struct k_work *w)
+{
+	ARG_UNUSED(w);
+
+	struct fs_dirent dirent;
+	int ret = fs_stat(WR_CHUNK_ACTIVE_PATH, &dirent);
+
+	if (ret == 0 &&
+	    wr_chunk_should_rotate_size(dirent.size, WR_CHUNK_SIZE_LIMIT_BYTES)) {
+		k_work_submit(&wr_chunk_work);
+	}
+}
+
 static void wr_chunk_timer_handler(struct k_timer *t)
 {
 	ARG_UNUSED(t);
 	k_work_submit(&wr_chunk_work);
 }
 
+static void wr_chunk_size_timer_handler(struct k_timer *t)
+{
+	ARG_UNUSED(t);
+	k_work_submit(&wr_chunk_size_check_work);
+}
+
 static int wr_chunk_init(void)
 {
 	k_work_init(&wr_chunk_work, wr_chunk_rotate);
+	k_work_init(&wr_chunk_size_check_work, wr_chunk_size_check);
+
 	k_timer_init(&wr_chunk_timer, wr_chunk_timer_handler, NULL);
 	k_timer_start(&wr_chunk_timer,
 		      K_MSEC(WR_CHUNK_PERIOD_MS),
 		      K_MSEC(WR_CHUNK_PERIOD_MS));
-	LOG_INF("wr_chunk: armed, period %d ms", WR_CHUNK_PERIOD_MS);
+
+	k_timer_init(&wr_chunk_size_timer, wr_chunk_size_timer_handler, NULL);
+	k_timer_start(&wr_chunk_size_timer,
+		      K_MSEC(WR_CHUNK_SIZE_POLL_MS),
+		      K_MSEC(WR_CHUNK_SIZE_POLL_MS));
+
+	LOG_INF("wr_chunk: armed, period %d ms, size limit %llu B (poll %d ms)",
+		WR_CHUNK_PERIOD_MS,
+		(unsigned long long)WR_CHUNK_SIZE_LIMIT_BYTES,
+		WR_CHUNK_SIZE_POLL_MS);
 	return 0;
 }
 
