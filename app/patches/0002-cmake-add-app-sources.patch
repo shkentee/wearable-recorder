@@ -1,0 +1,16 @@
+diff --git a/omi/firmware/devkit/CMakeLists.txt b/omi/firmware/devkit/CMakeLists.txt
+index 9dbba5f..3754214 100644
+--- a/omi/firmware/devkit/CMakeLists.txt
++++ b/omi/firmware/devkit/CMakeLists.txt
+@@ -19,6 +19,11 @@ target_sources(app PRIVATE
+     src/usb.c
+     src/wdog_facade.c
+ 	# src/nfc.c future release
++
++    # Phase 4 (kenta): app/src/* layered onto omi's app target. Path is
++    # relative to this CMakeLists, walking up from
++    # third_party/omi/omi/firmware/devkit to the wearable-recorder root.
++    ${CMAKE_CURRENT_SOURCE_DIR}/../../../../../app/src/wr_chunk.c
+ )
+ 
+ target_sources_ifdef(CONFIG_OMI_CODEC_OPUS app PRIVATE
