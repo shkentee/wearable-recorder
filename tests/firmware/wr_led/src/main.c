@@ -26,7 +26,7 @@ ZTEST_SUITE(wr_led_pick, NULL, NULL, NULL, NULL, NULL);
 /* Priority: warning patterns trump everything else                            */
 /* ========================================================================== */
 
-ZTEST(wr_led_pick, batt_crit_overrides_everything)
+ZTEST(wr_led_pick, test_batt_crit_overrides_everything)
 {
 	/* tick=0 puts blink_250ms = (0 % 3) < 2 = true → red expected on. */
 	struct wr_led_state s = {
@@ -42,7 +42,7 @@ ZTEST(wr_led_pick, batt_crit_overrides_everything)
 	ASSERT_RGB(out, true, false, false);
 }
 
-ZTEST(wr_led_pick, batt_crit_blink_phase)
+ZTEST(wr_led_pick, test_batt_crit_blink_phase)
 {
 	struct wr_led_state s = { .batt_pct = 5 };
 	/* blink_250ms = (tick % 3) < 2 → ticks 0,1 on; tick 2 off. */
@@ -52,7 +52,7 @@ ZTEST(wr_led_pick, batt_crit_blink_phase)
 	ASSERT_RGB(wr_led_pick(s, 3), true,  false, false);
 }
 
-ZTEST(wr_led_pick, batt_low_orange)
+ZTEST(wr_led_pick, test_batt_low_orange)
 {
 	struct wr_led_state s = { .batt_pct = 20, .recording = true };
 	/* blink_500ms = (tick % 5) < 3 → ticks 0,1,2 on. */
@@ -62,7 +62,7 @@ ZTEST(wr_led_pick, batt_low_orange)
 	ASSERT_RGB(out, false, false, false);
 }
 
-ZTEST(wr_led_pick, sd_full_red_solid)
+ZTEST(wr_led_pick, test_sd_full_red_solid)
 {
 	struct wr_led_state s = {
 		.batt_pct = 50,
@@ -74,7 +74,7 @@ ZTEST(wr_led_pick, sd_full_red_solid)
 	ASSERT_RGB(out, true, false, false);
 }
 
-ZTEST(wr_led_pick, sd_missing_blue_blink)
+ZTEST(wr_led_pick, test_sd_missing_blue_blink)
 {
 	struct wr_led_state s = { .batt_pct = 50, .sd_missing = true };
 	/* blink_1s = (tick % 10) < 5 → ticks 0..4 on, 5..9 off. */
@@ -86,7 +86,7 @@ ZTEST(wr_led_pick, sd_missing_blue_blink)
 /* Charging precedence                                                         */
 /* ========================================================================== */
 
-ZTEST(wr_led_pick, charged_solid_green)
+ZTEST(wr_led_pick, test_charged_solid_green)
 {
 	struct wr_led_state s = {
 		.batt_pct = 100,
@@ -97,7 +97,7 @@ ZTEST(wr_led_pick, charged_solid_green)
 	ASSERT_RGB(wr_led_pick(s, 12345), false, true, false);
 }
 
-ZTEST(wr_led_pick, charging_yellow_heartbeat)
+ZTEST(wr_led_pick, test_charging_yellow_heartbeat)
 {
 	struct wr_led_state s = { .batt_pct = 75, .charging = true };
 	/* hb_on = (tick % 50) == 0 — only on at tick 0, 50, 100, ... */
@@ -110,7 +110,7 @@ ZTEST(wr_led_pick, charging_yellow_heartbeat)
 /* Normal-state combinations                                                   */
 /* ========================================================================== */
 
-ZTEST(wr_led_pick, ble_only_green_hb)
+ZTEST(wr_led_pick, test_ble_only_green_hb)
 {
 	struct wr_led_state s = {
 		.batt_pct = 80,
@@ -122,7 +122,7 @@ ZTEST(wr_led_pick, ble_only_green_hb)
 	ASSERT_RGB(wr_led_pick(s, 50),  false, true,  false);
 }
 
-ZTEST(wr_led_pick, recording_only_white_hb)
+ZTEST(wr_led_pick, test_recording_only_white_hb)
 {
 	struct wr_led_state s = {
 		.batt_pct = 80,
@@ -134,7 +134,7 @@ ZTEST(wr_led_pick, recording_only_white_hb)
 	ASSERT_RGB(wr_led_pick(s, 50), true,  true,  true);
 }
 
-ZTEST(wr_led_pick, ble_and_recording_alternates_per_5s)
+ZTEST(wr_led_pick, test_ble_and_recording_alternates_per_5s)
 {
 	struct wr_led_state s = {
 		.batt_pct = 80,
@@ -157,7 +157,7 @@ ZTEST(wr_led_pick, ble_and_recording_alternates_per_5s)
 	ASSERT_RGB(wr_led_pick(s, 25), false, false, false);
 }
 
-ZTEST(wr_led_pick, idle_all_off)
+ZTEST(wr_led_pick, test_idle_all_off)
 {
 	struct wr_led_state s = { .batt_pct = 80 };
 	ASSERT_RGB(wr_led_pick(s, 0),    false, false, false);
@@ -168,7 +168,7 @@ ZTEST(wr_led_pick, idle_all_off)
 /* Boundary conditions on battery thresholds                                   */
 /* ========================================================================== */
 
-ZTEST(wr_led_pick, batt_6pct_is_low_not_crit)
+ZTEST(wr_led_pick, test_batt_6pct_is_low_not_crit)
 {
 	/* 6% > 5%, should fall through to BATT_LOW (orange). */
 	struct wr_led_state s = { .batt_pct = 6 };
@@ -176,7 +176,7 @@ ZTEST(wr_led_pick, batt_6pct_is_low_not_crit)
 	ASSERT_RGB(out, true, true, false);  /* orange = R+G */
 }
 
-ZTEST(wr_led_pick, batt_21pct_is_normal)
+ZTEST(wr_led_pick, test_batt_21pct_is_normal)
 {
 	/* 21% > 20%, no warning pattern. With no other state it's idle. */
 	struct wr_led_state s = { .batt_pct = 21 };
