@@ -80,15 +80,15 @@ void main() {
     await tester.pumpWidget(hostedDevicePage());
 
     packetCtrl.add(1);
-    await tester.pump();
+    await tester.pumpAndSettle();
     expect(find.text('audioCodec packets: 1'), findsOneWidget);
 
     packetCtrl.add(7);
-    await tester.pump();
+    await tester.pumpAndSettle();
     expect(find.text('audioCodec packets: 7'), findsOneWidget);
 
     packetCtrl.add(123);
-    await tester.pump();
+    await tester.pumpAndSettle();
     expect(find.text('audioCodec packets: 123'), findsOneWidget);
   });
 
@@ -97,11 +97,11 @@ void main() {
     await tester.pumpWidget(hostedDevicePage());
 
     bytesCtrl.add(160);
-    await tester.pump();
+    await tester.pumpAndSettle();
     expect(find.text('Saved bytes: 160'), findsOneWidget);
 
     bytesCtrl.add(4096);
-    await tester.pump();
+    await tester.pumpAndSettle();
     expect(find.text('Saved bytes: 4096'), findsOneWidget);
   });
 
