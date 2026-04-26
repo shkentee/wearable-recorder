@@ -49,20 +49,6 @@ static uint8_t discover_cb(struct bt_conn *conn,
 		return BT_GATT_ITER_STOP;
 	}
 
-	if (params->type == BT_GATT_DISCOVER_PRIMARY) {
-		bs_trace_info_time(1, "central: found omi audio service\n");
-		const struct bt_gatt_service_val *svc = attr->user_data;
-		discover_params.uuid = BT_UUID_OMI_AUDIO_CODEC;
-		discover_params.start_handle = attr->handle + 1;
-		discover_params.end_handle = svc->end_handle;
-		discover_params.type = BT_GATT_DISCOVER_CHARACTERISTIC;
-		int err = bt_gatt_discover(conn, &discover_params);
-		if (err) {
-			FAIL("central: characteristic discover failed (%d)\n", err);
-		}
-		return BT_GATT_ITER_STOP;
-	}
-
 	if (params->type == BT_GATT_DISCOVER_CHARACTERISTIC) {
 		bs_trace_info_time(1, "central: found audioCodec characteristic\n");
 		sub_params.notify = notify_cb;
@@ -85,11 +71,15 @@ static uint8_t discover_cb(struct bt_conn *conn,
 
 static void start_discovery(struct bt_conn *conn)
 {
-	discover_params.uuid = BT_UUID_OMI_AUDIO_SERVICE;
+	/* Skip primary-service discovery — we know the audioCodec UUID
+	 * upfront, so a single characteristic discovery across the full
+	 * GATT handle range finds it directly regardless of its parent
+	 * service layout. Simpler and dodges end_handle bookkeeping. */
+	discover_params.uuid = BT_UUID_OMI_AUDIO_CODEC;
 	discover_params.func = discover_cb;
 	discover_params.start_handle = BT_ATT_FIRST_ATTRIBUTE_HANDLE;
 	discover_params.end_handle = BT_ATT_LAST_ATTRIBUTE_HANDLE;
-	discover_params.type = BT_GATT_DISCOVER_PRIMARY;
+	discover_params.type = BT_GATT_DISCOVER_CHARACTERISTIC;
 
 	int err = bt_gatt_discover(conn, &discover_params);
 	if (err) {
