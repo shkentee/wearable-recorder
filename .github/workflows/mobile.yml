@@ -80,14 +80,18 @@ jobs:
           java -version
 
       - name: Generate android/ scaffolding
-        # `flutter create` is idempotent and only writes platform files it owns;
-        # existing lib/, test/, pubspec.yaml are preserved.
+        # `flutter create` writes the android/ tree we need, but it ALSO drops
+        # a default test/widget_test.dart that references a non-existent MyApp
+        # class, which then breaks `flutter analyze`. We delete that stub
+        # immediately — our real tests live in test/wr_*.dart and are
+        # untouched by flutter create (it only writes files it doesn't find).
         run: |
           flutter create \
             --platforms=android \
             --org com.shkentee.wearable_recorder \
             --project-name wearable_recorder \
             .
+          rm -f test/widget_test.dart
 
       - name: Inject BLE permissions into AndroidManifest.xml
         # `flutter create` ships a manifest without BLE / location permissions.
