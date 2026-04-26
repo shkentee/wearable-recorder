@@ -308,3 +308,27 @@ ZTEST(wr_chunk_logic, test_should_rotate_size_zero_file)
 	zassert_false(wr_chunk_should_rotate_size(0, 1),
 		      "empty file vs 1B threshold should not rotate");
 }
+
+/* ========================================================================== */
+/* D7 wiring sanity: spot-check the exact values the Flutter app will produce */
+/* ========================================================================== */
+
+/* wr_chunk_format_unsynced_name(0xdeadbeef, 3) → unsynced_deadbeef_00003.opus */
+ZTEST(wr_chunk_logic, test_chunk_unsynced_name_format)
+{
+	char buf[64];
+	int n = wr_chunk_format_unsynced_name(0xdeadbeefU, 3, buf, sizeof(buf));
+	zassert_true(n > 0, "format failed (%d)", n);
+	zassert_equal(strcmp(buf, "/SD:/audio/unsynced_deadbeef_00003.opus"), 0,
+		      "got '%s'", buf);
+}
+
+/* wr_chunk_format_epoch_name(1714180000) → 1714180000.opus */
+ZTEST(wr_chunk_logic, test_chunk_epoch_name_format)
+{
+	char buf[64];
+	int n = wr_chunk_format_epoch_name(1714180000ULL, buf, sizeof(buf));
+	zassert_true(n > 0, "format failed (%d)", n);
+	zassert_equal(strcmp(buf, "/SD:/audio/1714180000.opus"), 0,
+		      "got '%s'", buf);
+}

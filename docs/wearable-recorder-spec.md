@@ -25,7 +25,7 @@
 | D4 | SD: Plan B（常時書き込み） | ✅ Phase 4-1（pusher() ファンアウト patch 適用済。実機ジッター測定は Phase 5）|
 | D5 | バッテリー: 200mAh一本 | ⏳ 実機調達 Phase 5 |
 | D6 | チャンク: 10分/file | ✅ Phase 4-2 + 4-6+（純化 + ztest。サイズ閾値は wr_chunk_logic 実装済、Phase 6 で配線）|
-| D7 | ファイル名: `<UNIX_epoch>.opus` / 未同期時 `unsynced_<bootid>_<seq>.opus` | 🟡 Phase 4-6+ + Phase 6（純化ロジック + ztest + 3-kind 判別 / 削除順 OK。`performSyncTime()` 後のファイル生成パス配線のみ Phase 6 後半）|
+| D7 | ファイル名: `<UNIX_epoch>.opus` / 未同期時 `unsynced_<bootid>_<seq>.opus` | ✅ Phase 4-6+ + Phase 6（純化ロジック + ztest + 3-kind 判別 / 削除順 OK。`wr_time_sync` GATT char + `wr_chunk_set_sync_time()` runtime 配線完了 §22.15）|
 | D8 | FIFO: 空き10%以下で最古から削除 | ✅ Phase 4-3 + 4-6+ + Phase 6（純化 + ztest + LEGACY/UNSYNCED/EPOCH classify + 削除優先度総順序、計 18 ztest 追加）|
 | D9 | USB MSC: ボタン長押し起動でMSCモード | 🟡 Phase 4-4 + 4-6+ + Phase 6（純化 + runtime-mode 述語 + chunk/fifo の MSC short-circuit 配線済 + 13 ztest。`usb_enable()` 実呼び出しのみ Phase 5 実機後）|
 | D10 | Opus: 32kbps（omi標準）| ✅ |
@@ -1085,5 +1085,47 @@ wr_link run: PASSED
 - bsim CI 上で GATT notify 経路が常時 green。multi-notify burst / backpressure 計測は別 issue で追跡
 
 ---
+
+### 22.15 Phase 6: D7 配線 — epoch/unsynced ファイル名を runtime に適用
+
+D7（`<UNIX_epoch>.opus` / `unsynced_<bootid8hex>_<seq5>.opus`）の純粋ロジックは §22.3 で完成済みだったが、runtime の `wr_chunk.c` はまだ旧来の `chunk_NNNNN.opus` 命名を使っていた。このセクションでその配線を完了させた。
+
+**成果物**
+
+- `app/src/wr_time_sync.c`（新規）:
+  - UUID `19B10005-E8F2-537E-4F6C-D104768A1214` の **二次 GATT サービス** を `BT_GATT_SERVICE_DEFINE` で登録
+  - `BT_GATT_CHRC_WRITE_WITHOUT_RESP` characteristic を 1 本: 8 バイト LE64 Unix 秒を受信
+  - 受信後 `wr_chunk_set_sync_time(uint64_t unix_secs)` を呼び出す
+  - `third_party/omi/` は一切変更しない（Zephyr は複数 `BT_GATT_SERVICE_DEFINE` をサポート）
+
+- `app/src/wr_chunk.c`（更新）:
+  - `wr_chunk_sync` 静的 struct（`sync_time_secs` / `sync_uptime_ms` / `is_synced` / `boot_id`）を追加
+  - `wr_chunk_set_sync_time(uint64_t)`: 受信値と `k_uptime_get()` を記録、`is_synced = true` にセット
+  - `wr_chunk_build_target()`: 同期済みなら `wr_chunk_format_epoch_name(sync_secs + elapsed_s)`、未同期なら `wr_chunk_format_unsynced_name(boot_id, seq)`
+  - `wr_chunk_init()`: 起動時に `wr_chunk_make_boot_id(k_cycle_get_32(), sys_rand32_get())` で `boot_id` を 1 度だけ生成
+  - `wr_chunk_rotate()`: 旧 `wr_chunk_format_name()` 呼び出しを `wr_chunk_build_target()` に置き換え
+
+- `app/patches/0002-cmake-add-app-sources.patch`（更新）:
+  - `wr_time_sync.c` を `target_sources` に追加
+
+- `tests/firmware/wr_chunk/src/main.c`（更新）:
+  - `test_chunk_unsynced_name_format`: `(0xdeadbeef, 3)` → `/SD:/audio/unsynced_deadbeef_00003.opus`
+  - `test_chunk_epoch_name_format`: `1714180000` → `/SD:/audio/1714180000.opus`
+  - 既存テストと値が重複しないスポットチェック（Flutter アプリが送信する値に一致する固定値で確認）
+
+**動作フロー（D7 完全配線後）**
+
+1. 起動直後: `is_synced = false`、ローテーション時は `unsynced_<boot_id>_<seq>.opus` で保存
+2. Flutter アプリが UUID `19B10005-...` に 8 バイトを Write Without Response
+3. `wr_time_sync_write()` → `wr_chunk_set_sync_time(unix_secs)` → `is_synced = true`
+4. 次のローテーション: `unix_secs + (k_uptime_get() - sync_uptime_ms) / 1000` を epoch として命名
+
+**制約**
+
+- `sync_uptime_ms` は `k_uptime_get()` (ms 精度) ベースのため、±1 秒の誤差あり（Whisper 文字起こし用途では許容範囲）
+- 衝突プローブは `sync_time_secs++` でナッジするため、連続 epoch 衝突時に秒数がずれる（実運用上は 10 分ごとのローテーションで衝突は極めて稀）
+- `sys_rand32_get()` は Zephyr の entropy ドライバが必要（nRF52840 は HW RNG 搭載のため問題なし）
+
+**コミット**: `feat(firmware): D7 wire epoch/unsynced filename at runtime via wr_time_sync GATT write`
 
 **EOF**
