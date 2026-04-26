@@ -83,13 +83,18 @@ jobs:
           export PATH="$PIP_BIN:$PATH"
           west --version
 
-          # Zephyr's build-time scripts (gen_kobject_list.py, etc.) need
-          # pyelftools, pykwalify, packaging, etc. Install from Zephyr's
-          # bundled requirements file rather than guessing.
-          if [ -f /workdir/zephyr/scripts/requirements-base.txt ]; then
-            python3 -m pip install --quiet --user -r /workdir/zephyr/scripts/requirements-base.txt
+          # Zephyr's build-time scripts (gen_kobject_list.py, etc.) and
+          # twister both need a long list of Python deps. The repo ships
+          # multiple files; requirements.txt at the top is the meta-pin
+          # that pulls in -base, -testing, -build-test, -extras.
+          if [ -f /workdir/zephyr/scripts/requirements.txt ]; then
+            python3 -m pip install --quiet --user -r /workdir/zephyr/scripts/requirements.txt
+          elif [ -f /workdir/zephyr/scripts/requirements-base.txt ]; then
+            python3 -m pip install --quiet --user \
+              -r /workdir/zephyr/scripts/requirements-base.txt \
+              -r /workdir/zephyr/scripts/requirements-testing.txt
           else
-            python3 -m pip install --quiet --user pyelftools pykwalify packaging anytree intelhex
+            python3 -m pip install --quiet --user pyelftools pykwalify packaging anytree intelhex tabulate ply
           fi
 
           # Nordic Toolchain Manager installs the Zephyr SDK under a UUID
