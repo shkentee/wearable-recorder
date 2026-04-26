@@ -1,0 +1,24 @@
+# Flutter / Dart
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+build/
+
+# IDEs
+.idea/
+*.iml
+.vscode/
+
+# Generated platform scaffolding (created by `flutter create` on first setup)
+android/
+ios/
+linux/
+macos/
+windows/
+web/
+
+# Lock file: commit if you want reproducible builds across the team.
+# pubspec.lock

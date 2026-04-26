@@ -1,0 +1,30 @@
+name: wearable_recorder
+description: Minimal Flutter client for the wearable-recorder firmware (Phase 6 MVP).
+publish_to: "none"
+version: 0.1.0+1
+
+environment:
+  sdk: ">=3.5.0 <4.0.0"
+  flutter: ">=3.24.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+
+  # BLE — chosen per docs/phase6-plan-draft.md §2.1.
+  # flutter_blue_plus is the maintained successor of flutter_blue with
+  # solid Android 13 / iOS 17 support and no native build steps beyond
+  # platform permissions in AndroidManifest.xml / Info.plist.
+  flutter_blue_plus: ^1.32.12
+
+  # Permissions for Android 12+ scan / connect prompts.
+  permission_handler: ^11.3.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true

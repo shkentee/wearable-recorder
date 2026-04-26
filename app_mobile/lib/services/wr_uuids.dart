@@ -1,0 +1,24 @@
+/// omi GATT UUID definitions used by the wearable-recorder firmware.
+///
+/// Mirrored from `third_party/omi/omi/firmware/devkit/src/transport.c`
+/// (see also docs/phase6-plan-draft.md §3) so the mobile client can
+/// filter / subscribe without depending on the omi Flutter app.
+
+class WrUuids {
+  // Audio service.
+  static const String audioService = '19b10000-e8f2-537e-4f6c-d104768a1214';
+  static const String audioData    = '19b10001-e8f2-537e-4f6c-d104768a1214';
+  static const String audioCodec   = '19b10002-e8f2-537e-4f6c-d104768a1214';
+  static const String audioStatus  = '19b10003-e8f2-537e-4f6c-d104768a1214';
+
+  // DFU service (nrf standard).
+  static const String dfuService = '00001530-1212-efde-1523-785feabcd123';
+
+  // Storage data stream service (chunk fetch).
+  static const String storageService     = '30295780-4301-eabd-2904-2849adfeae43';
+  static const String storageStream      = '30295781-4301-eabd-2904-2849adfeae43';
+  static const String storageReadControl = '30295782-4301-eabd-2904-2849adfeae43';
+
+  // Default device name advertised by omi devkit firmware.
+  static const String defaultDeviceName = 'Omi DK1';
+}
