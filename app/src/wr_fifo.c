@@ -23,6 +23,10 @@
 #include <string.h>
 
 #include "wr_fifo_logic.h"
+#include "wr_msc_mode_logic.h"
+
+/* Owned by wr_msc_mode.c (no public header today — see Phase 6 plan). */
+extern bool wr_msc_mode_is_active(void);
 
 LOG_MODULE_REGISTER(wr_fifo, CONFIG_LOG_DEFAULT_LEVEL);
 
@@ -79,6 +83,15 @@ static bool wr_fifo_find_oldest(char *oldest_name, size_t name_size)
 static void wr_fifo_check(struct k_work *w)
 {
 	ARG_UNUSED(w);
+
+	/* Phase 6: in USB MSC mode the host owns the FAT volume, so we
+	 * must not unlink anything underneath it. Single source of truth
+	 * lives in wr_msc_mode_logic. */
+	if (!wr_msc_should_enable_fifo_pruning(
+		    wr_msc_runtime_mode(wr_msc_mode_is_active()))) {
+		LOG_INF("wr_fifo: MSC mode — pruning suppressed");
+		return;
+	}
 
 	struct fs_statvfs stat;
 	if (fs_statvfs(WR_FIFO_MOUNT, &stat) != 0) {

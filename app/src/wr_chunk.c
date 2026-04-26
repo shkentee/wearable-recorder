@@ -26,6 +26,10 @@
 #include <stdio.h>
 
 #include "wr_chunk_logic.h"
+#include "wr_msc_mode_logic.h"
+
+/* Owned by wr_msc_mode.c (no public header today — see Phase 6 plan). */
+extern bool wr_msc_mode_is_active(void);
 
 LOG_MODULE_REGISTER(wr_chunk, CONFIG_LOG_DEFAULT_LEVEL);
 
@@ -46,6 +50,16 @@ static uint32_t       wr_chunk_seq;
 static void wr_chunk_rotate(struct k_work *w)
 {
 	ARG_UNUSED(w);
+
+	/* Phase 6: in USB MSC mode the host owns the FAT volume, so any
+	 * fs_rename / fs_open from us would race the mass-storage stack.
+	 * Centralised decision lives in wr_msc_mode_logic so wr_fifo /
+	 * future gates stay consistent. */
+	if (!wr_msc_should_enable_chunk_rotation(
+		    wr_msc_runtime_mode(wr_msc_mode_is_active()))) {
+		LOG_INF("wr_chunk: MSC mode — rotation suppressed");
+		return;
+	}
 
 	/* Find a name that doesn't collide. We don't track the last seq
 	 * across reboots yet; just probe forward. */
