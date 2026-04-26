@@ -122,14 +122,25 @@ jobs:
           "$GITHUB_WORKSPACE/tests/bsim/wr_smoke/test_scripts/_compile.sh"
           ls -la "$BSIM_OUT_PATH/bin/" | head -20
 
-      - name: Smoke 3/3 — run wr_smoke under bs_2G4_phy_v1
+      - name: Smoke 3/5 — run wr_smoke under bs_2G4_phy_v1
         run: |
           set -e
           export PATH="$(python3 -c 'import site; print(site.USER_BASE)')/bin:$PATH"
-          # 60 s wall-clock cap — the simulation itself is ~5 s of
-          # simulated time so this is generous. timeout sends SIGTERM,
-          # then SIGKILL after 5 s if needed.
           timeout --kill-after=5 60 \
             "$GITHUB_WORKSPACE/tests/bsim/wr_smoke/test_scripts/run_smoke.sh"
+
+      - name: Smoke 4/5 — compile tests/bsim/wr_link (peripheral + central)
+        run: |
+          set -e
+          export PATH="$(python3 -c 'import site; print(site.USER_BASE)')/bin:$PATH"
+          chmod +x "$GITHUB_WORKSPACE/tests/bsim/wr_link/test_scripts/"*.sh
+          "$GITHUB_WORKSPACE/tests/bsim/wr_link/test_scripts/_compile.sh"
+
+      - name: Smoke 5/5 — run wr_link 2-device link under bs_2G4_phy_v1
+        run: |
+          set -e
+          export PATH="$(python3 -c 'import site; print(site.USER_BASE)')/bin:$PATH"
+          timeout --kill-after=5 90 \
+            "$GITHUB_WORKSPACE/tests/bsim/wr_link/test_scripts/run_link.sh"
           echo "Phase 6 TODO: add a second test that runs the binary against"
           echo "bs_2G4_phy_v1 + a central peer to actually exercise the link."
