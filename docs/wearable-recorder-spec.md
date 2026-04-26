@@ -15,25 +15,27 @@
 
 ### 0.1 けんた17決定事項サマリ
 
-| # | 確定事項 |
-|---|---|
-| D1 | SD SPI: MOSI=D10/MISO=D9/SCK=D8/CS=D2(P0.28)/24MHz |
-| D2 | ボタン: D4(P0.04, OUT) + D5(P0.05, IN) |
-| D3 | LED: ハートビート式 + 警告優先 |
-| D4 | SD: Plan B（常時書き込み） |
-| D5 | バッテリー: 200mAh一本 |
-| D6 | チャンク: 10分/file |
-| D7 | ファイル名: `<UNIX_epoch>.opus` / 未同期時 `unsynced_<bootid>_<seq>.opus` |
-| D8 | FIFO: 空き10%以下で最古から削除 |
-| D9 | USB MSC: ボタン長押し起動でMSCモード |
-| D10 | Opus: 32kbps（omi標準）|
-| D11 | DTX: 0（無効、omi標準）|
-| D12 | 時刻同期: omi `performSyncTime()` |
-| D13 | リポジトリ: 自前 + omi submodule |
-| D14 | テスト: GitHub CI + native_sim + 実機 |
-| D15 | リポ名: `shkentee/wearable-recorder` |
-| D16 | 充電中: 録音継続、黄HB/緑常時 |
-| D17 | スマホアプリ: Phase 6で自前ミニマル |
+進捗マーク: ✅ 実装完了 / 🟡 MVP実装済（残作業あり） / ⏳ 未着手
+
+| # | 確定事項 | 進捗 |
+|---|---|---|
+| D1 | SD SPI: MOSI=D10/MISO=D9/SCK=D8/CS=D2(P0.28)/24MHz | ✅ |
+| D2 | ボタン: D4(P0.04, OUT) + D5(P0.05, IN) | ✅ |
+| D3 | LED: ハートビート式 + 警告優先 | ✅ Phase 4-5（バッテリーADCフックは Phase 5）|
+| D4 | SD: Plan B（常時書き込み） | ✅ Phase 4-1（pusher() ファンアウト patch 適用済）|
+| D5 | バッテリー: 200mAh一本 | ⏳ 実機調達 Phase 5 |
+| D6 | チャンク: 10分/file | 🟡 Phase 4-2 MVP（連番命名のみ。UNIX_epoch / unsynced_xxx / サイズ閾値は Phase 6）|
+| D7 | ファイル名: `<UNIX_epoch>.opus` / 未同期時 `unsynced_<bootid>_<seq>.opus` | ⏳ Phase 6 |
+| D8 | FIFO: 空き10%以下で最古から削除 | ✅ Phase 4-3 |
+| D9 | USB MSC: ボタン長押し起動でMSCモード | 🟡 Phase 4-4 MVP（フラグ検出のみ。runtime mode-switch は Phase 5 実機後）|
+| D10 | Opus: 32kbps（omi標準）| ✅ |
+| D11 | DTX: 0（無効、omi標準）| ✅ |
+| D12 | 時刻同期: omi `performSyncTime()` | ✅ |
+| D13 | リポジトリ: 自前 + omi submodule | ✅ |
+| D14 | テスト: GitHub CI + native_sim + 実機 | ✅ Phase 2/3（実機は Phase 5）|
+| D15 | リポ名: `shkentee/wearable-recorder` | ✅ |
+| D16 | 充電中: 録音継続、黄HB/緑常時 | ✅ Phase 4-5 |
+| D17 | スマホアプリ: Phase 6で自前ミニマル | ⏳ Phase 6 |
 
 ---
 
@@ -534,6 +536,8 @@ PDMバッファfill
 - **200mAh で 50h以上** → 20h目標に対して **150%以上の余裕**
 - 150mAh でも達成可能（41〜47h）だったが、Plan B採用＋実機誤差を考慮して 200mAh に拡張（D5確定）
 
+> **注記**: §14.2 の電流値は理論計算ベース。実測差分は Phase 5（PPK2 計測）で本仕様書をアップデート予定。
+
 ### 14.4 電力最適化施策(優先度順)
 
 1. **DC/DCコンバータ有効化** (`CONFIG_BOARD_ENABLE_DCDC=y`)
@@ -616,6 +620,16 @@ adafruit-nrfutil dfu genpkg \
 - omi の Kconfig は `CONFIG_OMI_*` シンボルを定義（例: `CONFIG_OMI_CODEC_OPUS`, `CONFIG_OMI_OFFLINE_STORAGE`）
 - omi リポジトリには **ファームウェア用 GitHub Actions CI が無い**（`docs/lint` 系のみ）→ Phase 2 で新規構築
 - omi 全体サイズは 663MB（shallow clone でも）。Phase 4 で sparse-checkout 検討の余地あり
+
+### 16.3 Phase 4 で発見した重要事項
+
+実装中に omi 公式コードに以下の課題を発見した。けんたフォークではすべて回避済み。
+
+- **omi `transport.c::pusher()` が単一 TX キューで排他消費**: BLE 送信に成功するとキューから取り出されてしまうため、SD への同時書き込みができない。Plan B 実現のため `app/patches/0001-plan-b-fanout-tx-queue.patch` でファンアウト構造に refactor（peek してから SD/BLE 両方へ書き、両方成功時のみ pop）
+- **omi `sdcard.c` はファイルローテーションを実装していない**: `file_count = 1` がハードコードされており、起動するたびに同じ `audio/a01.txt` を上書きする欠陥がある。Phase 4-2 で `app/src/wr_chunk.c` を新規追加し、10分タイマーで `chunk_NNNNN.opus` にリネーム→新規 `a01.txt` 作成のフローを実装
+- **omi `prj.conf` にタイポ**: `CONFIG_OFFLINE_STORAGE` と書かれていたが正しくは `CONFIG_OMI_ENABLE_OFFLINE_STORAGE`。けんたの `app/overlay/spisd-fixup.conf` で正しいシンボルに上書き
+- **omi の DK1+SPISD prj.conf が機能不足**: `CONFIG_PM_DEVICE` / `CONFIG_WATCHDOG` / `CONFIG_FLASH` が抜けていてビルド/動作上必要だった。`spisd-fixup.conf` で追加
+- **NCS v2.9 で `CONFIG_NRFX_PDM` が直接設定不可になった**: アクセスパスが内部化されたため、CI / west.yml を **NCS v2.7-branch コンテナ** にダウングレード（仕様書 §1.3 の v2.9.0推奨は実質 v2.7 ベースで運用）
 
 ---
 
@@ -713,6 +727,45 @@ adafruit-nrfutil dfu genpkg \
 |---|---|
 | 2026-04-26 | 初版作成（仮版）。Claude(チャット)とけんたさんの議論をもとに策定 |
 | 2026-04-26 | Phase 1 確定版。omi リポジトリ実物検証 + 17項目決定（D1〜D17）反映。`shkentee/wearable-recorder` の正式仕様書として運用開始 |
+| 2026-04-26 | Phase 2 完了。GitHub Actions ビルド CI（NCS v2.7-branch コンテナ、UF2 アーティファクト出力） |
+| 2026-04-26 | Phase 3 完了。Twister + native_sim サニティテスト（FIFO 閾値の単体テスト）|
+| 2026-04-26 | Phase 4 完了（5サブタスク MVP）。Plan B / チャンクローテーション / FIFO / LED / USB MSC を実装。詳細は §22 / §16.3 参照 |
+
+---
+
+## 22. Phase 4 実装状況
+
+5 サブタスクの実装状況サマリ。残作業は Phase 5（実機検証）/ Phase 6（自前アプリ）に持ち越し。
+
+| サブタスク | 仕様書参照 | 実装ファイル | 状態 | MVP 残作業 |
+|---|---|---|---|---|
+| 4-1 Plan B（常時SD書き込み）| §6.3 | `app/patches/0001-plan-b-fanout-tx-queue.patch` | ✅ 完了 | Phase 5 で実機検証（pusher() の SD 書き込み遅延 / ジッター測定）|
+| 4-2 チャンクローテーション | §7.2 | `app/src/wr_chunk.c` | 🟡 MVP | UNIX_epoch 命名 / boot ID / `unsynced_<bootid>_<seq>` / サイズ閾値ベースのロテーションを Phase 6 で本格実装 |
+| 4-3 FIFO 自動削除 | §6.4 | `app/src/wr_fifo.c` | ✅ 完了 | なし（実機 SD で寿命確認は Phase 5）|
+| 4-4 USB Mass Storage | §6.5 | `app/src/wr_msc_mode.c` + `app/overlay/spisd-fixup.conf` | 🟡 MVP | 起動時のボタン長押し検出のみ完了。`usb_enable()` での MSC モード起動と録音 short-circuit を Phase 5 で追加 |
+| 4-5 LED 状態マシン | §11.2, §12 | `app/src/wr_led_status.c` | ✅ 完了 | バッテリー ADC 読み取りフックは Phase 5（実機 + ハードウェア依存）|
+
+### 22.1 メモリ予算（Phase 4 完了時点）
+
+| リソース | 使用量 | 上限 | 使用率 | 余裕 |
+|---|---|---|---|---|
+| FLASH | 318,204 B | 788 KB | **39.43%** | 約 61% |
+| RAM | 191,096 B | 256 KB | **72.90%** | 約 27% |
+
+→ Phase 5/6 の追加実装（USB MSC ランタイム、ADC、Plan B 実機チューニング、Phase 6 で時刻管理拡張）に対しても十分な余裕あり。
+
+### 22.2 関連ファイル
+
+| 新規ファイル | 役割 |
+|---|---|
+| `app/patches/0001-plan-b-fanout-tx-queue.patch` | omi `transport.c::pusher()` のファンアウト refactor |
+| `app/patches/0002-cmake-add-app-sources.patch` | omi の CMakeLists.txt に app/src/*.c をビルド対象として追加 |
+| `app/overlay/spisd-fixup.conf` | omi prj.conf の typo 修正・抜け CONFIG 補完・MSC 関連 CONFIG 追加 |
+| `app/src/wr_chunk.c` | 10分タイマー → ファイルリネーム → 新ファイル作成 |
+| `app/src/wr_fifo.c` | 1分ごとに `fs_statvfs`、空き<10% で最古 chunk を unlink |
+| `app/src/wr_led_status.c` | 100ms tick の警告優先 + ハートビート LED 状態マシン |
+| `app/src/wr_msc_mode.c` | 起動時 D5 長押し検出 → `wr_msc_mode_is_active()` フラグ |
+| `tests/firmware/sanity/` | Twister + native_sim FIFO 閾値テスト |
 
 ---
 
