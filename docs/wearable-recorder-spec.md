@@ -980,4 +980,107 @@ Phase 6 後半（Whisper パイプライン）+ Phase 5 実機電力検算に向
 
 ---
 
+### 22.11 Phase 6: Mobile widget tests + Android APK CI
+
+§22.5 で skeleton 化した `app_mobile/` に **Flutter widget テスト**を追加し、`mobile.yml` workflow を **flutter-test + android-apk** の 2 ジョブ構成に拡張した。「実機 BLE がなくても UI ロジックの回帰検出ができる」「PR ごとに署名なし debug APK が artifact として落とせる」状態を作る。
+
+**成果物 1: widget テスト（`app_mobile/test/`）**
+
+- `scan_page_test.dart`: **4 widget テスト**（empty-state ヒント表示 / `ScanResult` ストリームに対する `ListTile` レンダリング / scan ストリーム error 時の赤バナー / タップ → 接続フロー遷移）。`mocktail` で `WrBleScanner` を差し替え、platform channel を一切踏まない
+- `device_page_test.dart`: **5 widget テスト**（connect 中の "connecting…" 表示 / 接続状態ストリーム遷移 / `packetCount` ストリーム → カウンタ更新 / `bytesSaved` ストリーム → 表示更新 / `connect()` 例外時のエラーステータス）。`pumpAndSettle()` で setState チェーンの 1 フレーム遅延を吸収
+- 既存の `wr_audio_packet_test.dart`（9 ケース）/ `wr_packet_sink_test.dart`（7 ケース）と合わせ **計 25 Dart テスト**
+
+**成果物 2: `android-apk` ジョブ（`.github/workflows/mobile.yml`）**
+
+- ubuntu-latest + Temurin JDK 17 + Flutter 3.24（AGP 8.x 互換）
+- `flutter create --platforms=android` で android scaffold を **CI 上で都度生成**（gradle wrapper / proguard / keystore を git に持たない方針、`app_mobile/.gitignore` で除外）。`flutter create` が落とす stub `test/widget_test.dart` は即削除（`MyApp` 参照で `flutter analyze` が落ちる）
+- `android/settings.gradle` の `org.jetbrains.kotlin.android` を **1.7.10 → 1.9.24** に sed bump（推移依存の annotation-jvm 1.9.1 が metadata 1.9.0 で出力するため）
+- `AndroidManifest.xml` に `BLUETOOTH_SCAN` / `BLUETOOTH_CONNECT` / `ACCESS_FINE_LOCATION` を Python スクリプトで `<application>` 直前に注入
+- `~/.pub-cache/.../flutter_blue_plus_android-7.0.4/android/build.gradle` の `compileSdkVersion = flutter.compileSdkVersion` を **`= 34` リテラルに sed パッチ**（Flutter 3.24 scaffold で `flutter` android-extension property が消えたため）
+- `flutter build apk --debug` → 約 **84 MB** の `app-debug.apk` を `wearable-recorder-debug-${sha}` artifact として 14 日保存
+
+**コミット**: `bda0c54`（android scaffold + APK artifact）/ `c5d5181`（stub `widget_test.dart` 削除）/ `41665fc`（`flutter_blue_plus_android` gradle パッチ）/ `12f18e7`（Kotlin plugin 1.9.24 bump）/ `cdbc880`（`pumpAndSettle` for state-stream widget tests）/ `7fe036c`（`pumpAndSettle` for packetCount + bytesSaved）
+
+**制約**:
+- **debug APK のみ**（署名鍵を CI に持ち込まない方針、release APK は Phase 6 後半）
+- Android scaffold は CI 都度再生成のため、generator 出力が変わると CI が壊れる可能性あり（Flutter SDK バージョンを `3.24.0` 固定で吸収）
+- iOS ジョブは未追加（Phase 6 後半、macOS runner コスト判断後）
+
+---
+
+### 22.12 Phase 6: PC 側 decoder `--wav` Opus 実復号 + `power-predict.py`
+
+§22.9 で stdlib-only の `tools/decode-dump.py` を入れた段階では `--wav` は best-effort（pyogg / opuslib がなければスキップ）だったが、**実際の Opus → PCM → WAV 復号パスを `opuslib` で実装**して PR ごとに pytest で検証できるようにした。`tools/power-predict.py` も §22.9 で導入済（10 pytest）。
+
+**成果物**
+
+- `tools/decode-dump.py` `--wav`:
+  - omi は **1 BLE notify あたり 1 Opus フレーム**を吐くので Ogg framing は不要 → `opuslib.Decoder` を per-packet payload boundary で直接呼ぶ
+  - `--rate` フラグ（デフォルト 16000 Hz）で PDM サンプリングレート上書きに対応
+  - **decoder 未 import 時の優雅な縮退**: パケット 0 件なら header-only WAV / データありなら WAV スキップ、いずれも warn ログ + `exit 0` で `tools.yml` の依存ゼロ方針を維持
+  - `pyogg` は pre-wrapped Ogg コンテナ用の fallback として保持
+- `tools/test_decode_dump.py`: **+5 ケース**（decoder import 失敗 with packets / 同 no packets / `--rate` propagation / end-to-end CLI exit-0 / `pytest.importorskip` で gating した opuslib roundtrip）→ §22.9 の 7 ケースと合わせ **12 ケース**
+- `tools/README.md`: "Decoding to WAV" → "Opus decode (`--wav`)" に書き換え（`opuslib` OR `pyogg` install / 16-bit mono 16 kHz / `--rate` 上書きを明記）
+
+**コミット**: `a267d65`（並走 agent staging race により decoder 本体は載らず、誤って `app_mobile/test/*` が staged されたメッセージ違いコミット）/ `54353a0`（実体: `tools/decode-dump.py` + `test_decode_dump.py` + `tools/README.md`）
+
+**制約**:
+- `opuslib` は `tools.yml` の **CI 必須依存にしない**（README で `pip install opuslib` を opt-in 案内、CI は decoder 不在でも green）
+- BLE 再接続による `packet_id` ジャンプは検出のみで補完しない（§22.9 制約継続）
+- §14.2 の電力モデルは PPK2 計測値で再フィット予定（§22.9 制約継続）
+
+---
+
+### 22.13 OSS readiness: `CONTRIBUTING.md` / PR・Issue templates / `LICENSE` (MIT)
+
+リポジトリ public 化と外部コントリビューション受付に向けて GitHub 標準の community files を整備した。
+
+**成果物**
+
+- `LICENSE`: **MIT**（けんた改修部分。omi 部分は元の MIT ライセンスを継承するので whole-repo MIT で整合）
+- `CONTRIBUTING.md`: ブランチ運用 / コミットメッセージ規約（Phase prefix）/ ローカルビルド手順 / ztest と pytest の走らせ方 / submodule (`third_party/omi`) を触らない原則 / レビュアー期待値
+- `.github/PULL_REQUEST_TEMPLATE.md`: 変更概要 / 対応 Phase / テスト結果 / リスク・ロールバック手順
+- `.github/ISSUE_TEMPLATE/bug.yml` / `feature.yml` / `task.yml`: Issue Forms 形式（Phase / 影響範囲 / 再現手順 を必須化）
+- `.github/CODEOWNERS`: 全パスを `@shkentee` に default 振り
+
+**コミット**: `7dd7939`（`docs: CONTRIBUTING + PR/issue templates + LICENSE for community readiness`、7 file / +368 行）
+
+**制約**:
+- `CODEOWNERS` は単一オーナー（Phase 5 以降 reviewer 増員時に再分割）
+- README の "ライセンス" セクションは MIT を明示（§22.14 の README rev で更新）
+
+---
+
+### 22.14 Phase 5+ bsim wr_link: notify exchange 試行 → revert（後日リトライ事項）
+
+§22.6 で「2 デバイス GATT 接続 verdict」まで進んだ `wr_link` を、「**peripheral GATT service 定義 + central subscribe + notify ペイロード受信**」まで拡張する試みを実施したが、**kernel panic で revert** した。後日 `bt_conn_cb_register()` 動的版を使った v2 を再挑戦予定。
+
+**試行内容**（`23c1818`、後に `ed47783` で revert）
+
+- peripheral 側: `BT_GATT_SERVICE_DEFINE` で omi audio service（notify characteristic UUID `19b10002-...`）を 1 本定義。`connected` イベント 200 ms 後に **3-byte omi header + "ABCD" の 7-byte sentinel** を `bt_gatt_notify` で送信し PASS
+- central 側: connect 時に `bt_gatt_discover` でサービス → characteristic の順に discover、`bt_gatt_subscribe` で購読し、`notify_cb` 初回発火で PASS
+- `prj.conf`: `CONFIG_BT_GATT_DYNAMIC_DB=y` + `CONFIG_BT_GATT_CLIENT=y`
+
+**失敗モード（root cause）**
+
+- `BT_CONN_CB_DEFINE()` は **link-time に static initializer で `_bt_conn_cb` セクションへ登録される**マクロ
+- `wr_link` は **同一バイナリが `bs_tests -testid` で peripheral / central どちらにも切り替わる構成**（§22.6）なので、両ロールの `BT_CONN_CB_DEFINE` が同じ ELF にリンク → **両方の `connected` コールバックが両ロール側で発火**
+- 結果として「peripheral 側の `connected` で `bt_gatt_notify` を即発」コールバックが **central 起動時にも呼ばれて GATT DB 未初期化状態で notify 発行 → kernel panic**
+
+**revert 理由**: peripheral / central の `connected` コールバックを runtime ロールで分岐する素直な手段が無く（compile-time `#ifdef` で割ろうとすると同一バイナリ前提が崩れる）、**bsim CI 全体を red にしたまま放置するより一旦 §22.6 の「接続 verdict のみ」に戻すのが安全**と判断。
+
+**v2 再挑戦方針（後日 TODO）**
+
+- `BT_CONN_CB_DEFINE` を捨てて **`bt_conn_cb_register()` 動的登録版**を使う（`bs_test_post_init_f` で testid を見て自分のロール用 callback だけ登録）
+- ロール識別は `bs_tests` の `testid` 文字列を `bs_test_main_f` 入口で読んで static enum に格納
+- 並走 agent（私の別セッション）が `tests/bsim/wr_link/` + `.github/workflows/bsim.yml` のみ触って実装する
+
+**コミット**: `23c1818`（実装、4 file / +162 -8 行）/ `ed47783`（revert、4 file / +8 -162 行）
+
+**制約**:
+- 現在の `wr_link` 動作は §22.6 のまま（接続成立で PASS、notify は無し）
+- v2 着手まで bsim 経由の GATT notify エンドツーエンド検証は未保証
+
+---
+
 **EOF**

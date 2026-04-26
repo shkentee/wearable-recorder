@@ -10,7 +10,9 @@
 
 ## ステータス
 
-**Phase 4-6+ 完了 / Phase 5+ bsim 実走（`wr_smoke` 1-dev + `wr_link` 2-dev GATT verdict）/ Phase 6 進行中（wr_fifo classify + wr_msc runtime + PC decoder + power model + Flutter skeleton、ztest 約90本 + tools pytest 17本）/ Phase 5 実機待ち**
+**Phase 4-6+ 完了 / Phase 5 実機待ち** — bsim CI は `wr_smoke`（1-dev）+ `wr_link`（2-dev GATT 接続 verdict）まで安定 green。`wr_link` notify exchange は一度試したが kernel panic で revert（`bt_conn_cb_register()` 動的版で v2 再挑戦予定、§22.14）。Phase 6 は wr_chunk / wr_fifo / wr_msc 純化 + PC tools + Flutter skeleton + Android APK CI まで完了し、残るは実機 bring-up・Drive アップロード・`usb_enable()` runtime 切替。
+
+ztest 約 90 本 + tools pytest 22 本（decode-dump 12 + power-predict 10）+ Flutter Dart テスト 25 本（widget 9 + unit 16）すべて green。
 
 | Phase | 内容 | 状態 |
 |---|---|---|
@@ -22,7 +24,7 @@
 | Phase 4-6+ | wr_chunk / wr_fifo / wr_msc_mode 純化 + ztest 約47本（合計 約60本）| ✅ |
 | Phase 5+ | BabbleSim CI（5 stage: -help → wr_smoke → wr_link 2-device GATT verdict）| ✅ |
 | Phase 5 | 実機書き込み・電力測定（PPK2）| ⏳ → [Phase 5 quickstart](docs/phase5-quickstart.md) |
-| Phase 6 | wr_chunk epoch/boot-id/size + wr_fifo classify (+18 ztest) + wr_msc runtime-mode (+13 ztest) + PC decoder + power-predict + Flutter skeleton | 🟡 進行中（残: 実機 BLE / Drive アップロード / `usb_enable()` runtime 切替）|
+| Phase 6 | wr_chunk epoch/boot-id/size + wr_fifo classify (+18 ztest) + wr_msc runtime-mode (+13 ztest) + PC decoder (Opus→WAV) + power-predict + Flutter skeleton + widget tests + Android APK CI | 🟡 進行中（残: 実機 BLE / Drive アップロード / `usb_enable()` runtime 切替 / `wr_link` notify v2）|
 
 詳細は [docs/wearable-recorder-spec.md](docs/wearable-recorder-spec.md) §22、Phase 5 実機 bring-up は [docs/phase5-quickstart.md](docs/phase5-quickstart.md)、bsim 設計は [docs/bsim-setup.md](docs/bsim-setup.md)、Phase 6 着手準備は [docs/phase6-plan-draft.md](docs/phase6-plan-draft.md) 参照。
 
@@ -37,7 +39,7 @@
 ### Phase 5 / Phase 6 未着手項目
 
 - **Phase 5**: 実機書き込み（XIAO Sense UF2）、PPK2 電力測定、バッテリー ADC、MSC runtime 切替、Plan B 実機ジッター測定
-- **Phase 6**: 自前ミニマルスマホアプリ（Flutter or React Native）、チャンク命名本格化（`<UNIX_epoch>.opus` / `unsynced_<bootid>_<seq>.opus`）、サイズ閾値ローテーション
+- **Phase 6 残**: Google Drive アップロード、Foreground Service 常時接続、`performSyncTime()` 後のチャンク epoch 命名配線、`usb_enable()` runtime 切替、`wr_link` notify exchange v2（`bt_conn_cb_register()` 動的版、§22.14）、iOS APK ジョブ、release APK 署名
 
 ## メモリ予算（Phase 4 完了時点）
 
@@ -71,11 +73,12 @@
 │       ├── wr_msc_mode.c           # 起動時ボタン長押し MSC モード検出（グルー）
 │       └── wr_msc_mode_logic.c     # 純粋判定（threshold / 防御）
 ├── app_mobile/                     # Phase 6 自前 Flutter アプリ（skeleton）
-│   ├── pubspec.yaml                # flutter_blue_plus / permission_handler / path_provider
-│   └── lib/
-│       ├── main.dart
-│       ├── pages/                  # scan_page / device_page
-│       └── services/               # wr_uuids / wr_ble_scanner / wr_ble_device / wr_audio_packet / wr_packet_sink
+│   ├── pubspec.yaml                # flutter_blue_plus / permission_handler / path_provider / mocktail
+│   ├── lib/
+│   │   ├── main.dart
+│   │   ├── pages/                  # scan_page / device_page
+│   │   └── services/               # wr_uuids / wr_ble_scanner / wr_ble_device / wr_audio_packet / wr_packet_sink
+│   └── test/                       # widget + unit tests（scan_page / device_page / wr_audio_packet / wr_packet_sink、計25本）
 ├── overlay/                        # XIAO Sense 用 devicetree overlay
 ├── boards/native_sim/              # native_sim テスト用ボード定義
 ├── tests/
@@ -89,12 +92,15 @@
 │   └── bsim/
 │       ├── wr_smoke/test_scripts/  # 1-device bsim smoke（_env / _compile / run_smoke）
 │       └── wr_link/                # 2-device peripheral+central GATT verdict
+│           └── test_scripts/       # _env / _compile / run_link（同一 ELF + bs_tests -testid で role 切替）
 ├── tools/                          # PC-side helpers（Phase 6）
-│   ├── decode-dump.py              # BLE notify dump デコーダ（stdlib-only、+7 pytest）
+│   ├── decode-dump.py              # BLE notify dump デコーダ（stdlib-only + opuslib opt-in、+12 pytest）
 │   ├── power-predict.py            # 電力モデル CLI（§14.2 デフォルト一致、+10 pytest）
 │   ├── test_decode_dump.py
 │   ├── test_power_predict.py
 │   └── README.md
+├── CONTRIBUTING.md                 # ブランチ運用 / コミットメッセージ / submodule 不可侵 / レビュアー期待値
+├── LICENSE                         # MIT（けんた改修部分、omi 部分の元 MIT と整合）
 ├── third_party/omi/                # BasedHardware/omi (git submodule、不可侵)
 ├── docs/
 │   ├── wearable-recorder-spec.md   # 正式仕様書
