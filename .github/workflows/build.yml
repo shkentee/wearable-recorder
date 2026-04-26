@@ -10,7 +10,11 @@ jobs:
   build:
     runs-on: ubuntu-latest
     container:
-      image: nordicplayground/nrfconnect-sdk:v2.9-branch
+      # omi was developed against NCS v2.7. v2.9 makes CONFIG_NRFX_PDM
+      # non-user-settable (driven by device tree), which trips omi's
+      # prj_xiao_ble_sense_devkitv1-spisd.conf. Stay on v2.7-branch until we
+      # decide whether to upstream-patch omi or fork.
+      image: nordicplayground/nrfconnect-sdk:v2.7-branch
     defaults:
       run:
         shell: bash
