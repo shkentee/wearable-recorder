@@ -45,3 +45,97 @@ jobs:
 
       - name: Unit tests (Dart VM, no device required)
         run: flutter test --reporter expanded
+
+  android-apk:
+    # Android scaffolding is intentionally NOT committed (see app_mobile/.gitignore).
+    # We regenerate it in CI via `flutter create --platforms=android` so the repo
+    # stays slim (no Gradle wrappers / proguard / keystores in git).
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app_mobile
+    steps:
+      - name: Checkout repo (no submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Set up JDK 17 (required by AGP 8.x used by Flutter 3.24)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter 3.24 (stable)
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.24.0'
+          channel: stable
+          cache: true
+
+      - name: Show toolchain versions
+        run: |
+          flutter --version
+          dart --version
+          java -version
+
+      - name: Generate android/ scaffolding
+        # `flutter create` is idempotent and only writes platform files it owns;
+        # existing lib/, test/, pubspec.yaml are preserved.
+        run: |
+          flutter create \
+            --platforms=android \
+            --org com.shkentee.wearable_recorder \
+            --project-name wearable_recorder \
+            .
+
+      - name: Inject BLE permissions into AndroidManifest.xml
+        # `flutter create` ships a manifest without BLE / location permissions.
+        # We inject the three permissions our flutter_blue_plus + Android 12+
+        # runtime-prompt flow needs, right before the opening <application> tag.
+        run: |
+          MANIFEST=android/app/src/main/AndroidManifest.xml
+          test -f "$MANIFEST" || { echo "Manifest not found: $MANIFEST"; exit 1; }
+          python3 - "$MANIFEST" <<'PY'
+          import sys, re, pathlib
+          path = pathlib.Path(sys.argv[1])
+          src = path.read_text(encoding='utf-8')
+          perms = [
+              '<uses-permission android:name="android.permission.BLUETOOTH_SCAN" />',
+              '<uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />',
+              '<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />',
+          ]
+          # Drop any duplicates that might already exist (defensive).
+          for p in perms:
+              src = src.replace('    ' + p + '\n', '')
+              src = src.replace(p + '\n', '')
+          block = '\n'.join('    ' + p for p in perms) + '\n'
+          new_src, n = re.subn(r'(\s*)<application\b', '\n' + block + r'\1<application', src, count=1)
+          if n != 1:
+              print('ERROR: <application> tag not found in manifest', file=sys.stderr)
+              sys.exit(1)
+          path.write_text(new_src, encoding='utf-8')
+          print('Injected', len(perms), 'permissions into', path)
+          PY
+          echo '--- AndroidManifest.xml after injection ---'
+          cat "$MANIFEST"
+
+      - name: Resolve dependencies
+        run: flutter pub get
+
+      - name: Static analysis (after scaffold so generated files are checked too)
+        run: flutter analyze
+
+      - name: Build debug APK
+        run: flutter build apk --debug
+
+      - name: Show APK size
+        run: ls -lh build/app/outputs/flutter-apk/
+
+      - name: Upload debug APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wearable-recorder-debug-${{ github.sha }}
+          path: app_mobile/build/app/outputs/flutter-apk/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
