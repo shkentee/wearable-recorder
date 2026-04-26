@@ -1,0 +1,13 @@
+tests:
+  wearable_recorder.wr_fifo_logic:
+    tags:
+      - wearable_recorder
+      - wr_fifo_logic
+    platform_allow:
+      - native_sim
+      - native_sim/native/64
+    integration_platforms:
+      - native_sim
+    harness: ztest
+    harness_config:
+      type: cli

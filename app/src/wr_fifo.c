@@ -22,6 +22,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "wr_fifo_logic.h"
+
 LOG_MODULE_REGISTER(wr_fifo, CONFIG_LOG_DEFAULT_LEVEL);
 
 extern struct k_mutex write_sdcard_mutex;
@@ -49,18 +51,13 @@ static bool wr_fifo_find_oldest(char *oldest_name, size_t name_size)
 	struct fs_dirent ent;
 
 	while (fs_readdir(&dir, &ent) == 0 && ent.name[0] != '\0') {
-		/* Skip directories and the active-recording file. */
 		if (ent.type == FS_DIR_ENTRY_DIR) {
 			continue;
 		}
-		if (strcmp(ent.name, WR_FIFO_ACTIVE_NAME) == 0) {
+		if (!wr_fifo_is_managed_chunk(ent.name, WR_FIFO_ACTIVE_NAME)) {
 			continue;
 		}
-		/* Only manage files we created. */
-		if (strncmp(ent.name, "chunk_", 6) != 0) {
-			continue;
-		}
-		if (!found || strcmp(ent.name, oldest_name) < 0) {
+		if (!found || wr_fifo_compare_chunk(ent.name, oldest_name) < 0) {
 			strncpy(oldest_name, ent.name, name_size - 1);
 			oldest_name[name_size - 1] = '\0';
 			found = true;
@@ -84,8 +81,7 @@ static void wr_fifo_check(struct k_work *w)
 	uint64_t total = (uint64_t)stat.f_blocks * stat.f_frsize;
 	uint64_t free = (uint64_t)stat.f_bfree * stat.f_frsize;
 
-	/* Trigger deletion when free * 100 < total * threshold. */
-	if (free * 100 >= total * WR_FIFO_THRESHOLD_PCT) {
+	if (!wr_fifo_should_prune(free, total, WR_FIFO_THRESHOLD_PCT)) {
 		return;
 	}
 
