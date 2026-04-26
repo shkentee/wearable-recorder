@@ -22,6 +22,11 @@ jobs:
       BSIM_COMPONENTS_PATH: /opt/bsim_ws/bsim/components
       ZEPHYR_BASE: /workdir/zephyr
     steps:
+      - name: Checkout repo (no submodules — bsim test owns its sources)
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
       - name: Install bsim build deps
         run: |
           apt-get update -qq
@@ -83,20 +88,8 @@ jobs:
             python3 -m pip install --quiet --user -r /workdir/zephyr/scripts/requirements.txt
           fi
 
-      - name: Smoke test — bsim binaries respond to --help
+      - name: Smoke 1/2 — bsim binaries respond to --help
         run: |
-          set -e
-          # We deliberately do NOT compile a Zephyr-bundled bsim test
-          # here. NCS layers nrfxlib's SoftDevice Controller on top of
-          # Zephyr, which CMake-rejects nrf52_bsim's float ABI combo
-          # ("not supported by the SoftDevice Controller lib"). Picking
-          # the right controller for bsim under NCS is non-trivial
-          # plumbing (override CONFIG_BT_LL_SW_SPLIT, suppress nrfxlib
-          # softdevice_controller for this target, etc.) and belongs in
-          # Phase 6 when we write our first real omi BLE bsim test.
-          #
-          # For now just prove the install is sane: each shipped bsim
-          # binary exists and accepts -help (returns 0 or prints usage).
           set +e
           for bin in bs_2G4_phy_v1 bs_device_handbrake bs_device_pause_simu \
                      bs_device_time_monitor; do
@@ -115,6 +108,27 @@ jobs:
             fi
             echo "$bin: ok (rc=$rc)"
           done
-          echo "smoke test PASSED — bsim install is functional"
-          echo "Phase 6 TODO: add Zephyr/NCS bsim test under tests/bsim/wr_*/"
-          echo "and switch this step to compile + run that test end-to-end."
+          echo "bsim install: OK"
+
+      - name: Smoke 2/2 — compile tests/bsim/wr_smoke for nrf52_bsim
+        run: |
+          set -e
+          # Pinned LL controller (CONFIG_BT_LL_SW_SPLIT=y, BT_LL_SOFTDEVICE=n
+          # in tests/bsim/wr_smoke/prj.conf) is what unlocks nrf52_bsim
+          # under NCS — without it, nrfxlib's softdevice_controller
+          # CMake-rejects this SoC + float ABI combo.
+          export PATH="$(python3 -c 'import site; print(site.USER_BASE)')/bin:$PATH"
+          cd /workdir
+          west build \
+            -b nrf52_bsim \
+            -p always \
+            -d "$GITHUB_WORKSPACE/build_bsim_smoke" \
+            "$GITHUB_WORKSPACE/tests/bsim/wr_smoke"
+          ls -la "$GITHUB_WORKSPACE/build_bsim_smoke/zephyr/" | head -10
+          # The bsim build produces a native ELF, not a hex.
+          test -f "$GITHUB_WORKSPACE/build_bsim_smoke/zephyr/zephyr.exe" \
+            || { echo "::error::expected zephyr.exe not found"; exit 1; }
+          file "$GITHUB_WORKSPACE/build_bsim_smoke/zephyr/zephyr.exe"
+          echo "wr_smoke compile: OK"
+          echo "Phase 6 TODO: add a second test that runs the binary against"
+          echo "bs_2G4_phy_v1 + a central peer to actually exercise the link."
