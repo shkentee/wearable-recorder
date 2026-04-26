@@ -49,6 +49,21 @@ extern enum bst_result_t bst_result;
 #define BT_UUID_OMI_AUDIO_SERVICE \
 	BT_UUID_DECLARE_128(BT_UUID_OMI_AUDIO_SERVICE_VAL)
 
+/* audioCodec characteristic (notify) — the path the firmware streams
+ * Opus packets over (3 byte header + payload). For the bsim notify
+ * exchange test we just notify a known short payload and verify the
+ * central receives it. */
+#define BT_UUID_OMI_AUDIO_CODEC_VAL \
+	BT_UUID_128_ENCODE(0x19B10002, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214)
+#define BT_UUID_OMI_AUDIO_CODEC \
+	BT_UUID_DECLARE_128(BT_UUID_OMI_AUDIO_CODEC_VAL)
+
+/* Sentinel payload the peripheral notifies once after connect.
+ * Mirrors omi packet header layout: packet_id LE16 + frame_id u8. */
+#define WR_LINK_PROBE_PAYLOAD \
+	{ 0x42, 0x00, 0x00, /* header: pkt 0x0042, frame 0 */ \
+	  'A', 'B', 'C', 'D' /* dummy "Opus" payload */ }
+
 void wr_test_init(void);
 void wr_test_tick(bs_time_t HW_device_time);
 
