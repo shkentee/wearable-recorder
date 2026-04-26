@@ -17,6 +17,14 @@ class _MockDriveApi extends Mock implements drive.DriveApi {}
 class _MockFilesResource extends Mock implements drive.FilesResource {}
 
 // ---------------------------------------------------------------------------
+// Fakes (required by mocktail for any() / captureAny() with custom types)
+// ---------------------------------------------------------------------------
+
+class _FakeDriveFile extends Fake implements drive.File {}
+
+class _FakeMedia extends Fake implements drive.Media {}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -32,6 +40,11 @@ Future<File> _tempOpusFile([String content = 'fake opus data']) async {
 // ---------------------------------------------------------------------------
 
 void main() {
+  setUpAll(() {
+    registerFallbackValue(_FakeDriveFile());
+    registerFallbackValue(_FakeMedia());
+  });
+
   late _MockDriveApi mockApi;
   late _MockFilesResource mockFiles;
   late _MockGoogleSignIn mockSignIn;
