@@ -9,6 +9,12 @@ on:
     - cron: "17 18 * * *"
   workflow_dispatch:
 
+# createWorkflowDispatch needs actions:write; the default GITHUB_TOKEN
+# only grants contents:read on schedule events, so request it explicitly.
+permissions:
+  actions: write
+  contents: read
+
 jobs:
   trigger:
     runs-on: ubuntu-latest
