@@ -1,7 +1,7 @@
 # wearable-recorder
 
 [![firmware-build](https://github.com/shkentee/wearable-recorder/actions/workflows/build.yml/badge.svg)](https://github.com/shkentee/wearable-recorder/actions/workflows/build.yml)
-[![bsim-smoke](https://github.com/shkentee/wearable-recorder/actions/workflows/bsim.yml/badge.svg)](https://github.com/shkentee/wearable-recorder/actions/workflows/bsim.yml)
+[![bsim-smoke](https://github.com/shkentee/wearable-recorder/actions/workflows/bsim.yml/badge.svg)](https://github.com/shkentee/wearable-recorder/actions/workflows/bsim.yml) — 2-device GATT notify exchange を検証
 [![tools](https://github.com/shkentee/wearable-recorder/actions/workflows/tools.yml/badge.svg)](https://github.com/shkentee/wearable-recorder/actions/workflows/tools.yml)
 
 自作ウェアラブル録音デバイスのファームウェア。Seeed XIAO nRF52840 Sense + microSD で起きている間ずっと録音し、後でローカル faster-whisper large-v3 で文字起こしする。

@@ -1051,35 +1051,38 @@ Phase 6 後半（Whisper パイプライン）+ Phase 5 実機電力検算に向
 
 ---
 
-### 22.14 Phase 5+ bsim wr_link: notify exchange 試行 → revert（後日リトライ事項）
+### 22.14 Phase 5+ bsim wr_link v2: notify exchange 達成（peripheral GATT + central subscribe + 7-byte sentinel 受信）
 
-§22.6 で「2 デバイス GATT 接続 verdict」まで進んだ `wr_link` を、「**peripheral GATT service 定義 + central subscribe + notify ペイロード受信**」まで拡張する試みを実施したが、**kernel panic で revert** した。後日 `bt_conn_cb_register()` 動的版を使った v2 を再挑戦予定。
+§22.6 で「2 デバイス GATT 接続 verdict」まで進んだ `wr_link` を、**peripheral GATT service 公開 + central scan/connect/discover/subscribe + notify ペイロード受信**までエンドツーエンドで通すことに成功した。一度 §22.14 旧版（`23c1818`）で kernel panic により revert（`ed47783`）したが、`bt_conn_cb_register()` 動的版で v2 として再構築し最終 green。
 
-**試行内容**（`23c1818`、後に `ed47783` で revert）
+**達成内容**
 
-- peripheral 側: `BT_GATT_SERVICE_DEFINE` で omi audio service（notify characteristic UUID `19b10002-...`）を 1 本定義。`connected` イベント 200 ms 後に **3-byte omi header + "ABCD" の 7-byte sentinel** を `bt_gatt_notify` で送信し PASS
-- central 側: connect 時に `bt_gatt_discover` でサービス → characteristic の順に discover、`bt_gatt_subscribe` で購読し、`notify_cb` 初回発火で PASS
-- `prj.conf`: `CONFIG_BT_GATT_DYNAMIC_DB=y` + `CONFIG_BT_GATT_CLIENT=y`
+- peripheral 側: `BT_GATT_SERVICE_DEFINE` で omi audio service を 1 本公開し、`audioCodec` characteristic（notify、UUID `19b10002-...`）に **3-byte omi header + "ABCD" の 7-byte sentinel** を `bt_gatt_notify` で送信
+- central 側: scan → connect → `bt_gatt_discover` でサービス + characteristic 探索 → `bt_gatt_subscribe` で CCC 書き込み → `notify_cb` 初回発火で PASS
+- ロール分岐: `BT_CONN_CB_DEFINE` 廃止 → `bs_test_post_init_f` で testid を見て自ロール用 callback だけ `bt_conn_cb_register()` で登録（同一 ELF / 両ロール混在問題を解消）
+- 所要時間: bsim 上で **1 秒未満で notify exchange 完了**（`peripheral=0 central=0 phy=0` で `wr_link run: PASSED`）
 
-**失敗モード（root cause）**
+**試行錯誤の経緯**（v2 で踏んだ罠）
 
-- `BT_CONN_CB_DEFINE()` は **link-time に static initializer で `_bt_conn_cb` セクションへ登録される**マクロ
-- `wr_link` は **同一バイナリが `bs_tests -testid` で peripheral / central どちらにも切り替わる構成**（§22.6）なので、両ロールの `BT_CONN_CB_DEFINE` が同じ ELF にリンク → **両方の `connected` コールバックが両ロール側で発火**
-- 結果として「peripheral 側の `connected` で `bt_gatt_notify` を即発」コールバックが **central 起動時にも呼ばれて GATT DB 未初期化状態で notify 発行 → kernel panic**
+1. `BT_CONN_CB_DEFINE` 起因の kernel panic → `bt_conn_cb_register()` 動的登録版に移行（`1ffbfb1`）
+2. peripheral が CCC subscribe 前に notify を撃って central が受け取れず → CCC subscribe 完了待機後に発火（`7611749`）
+3. characteristic discover で end_handle 0 → `svc->end_handle` を流し込み（`5f476a5`）→ それでも検出失敗で全範囲スキャン簡略化（`994c4e9`）→ `DISCOVER_ATTRIBUTE` 経由を試行（`f0a5c31`）
+4. 最終的な鍵は **`BT_GATT_DISCOVER_CHARACTERISTIC` の `uuid` filter は chrc 宣言の UUID（汎用 chrc UUID）と比較する**仕様だった点。uuid=NULL で全 chrc を歩いて callback 内で `chrc->uuid`（= 値側の UUID）を比較する Zephyr 公式パターンに切替えて green（`0f11a1d`）
 
-**revert 理由**: peripheral / central の `connected` コールバックを runtime ロールで分岐する素直な手段が無く（compile-time `#ifdef` で割ろうとすると同一バイナリ前提が崩れる）、**bsim CI 全体を red にしたまま放置するより一旦 §22.6 の「接続 verdict のみ」に戻すのが安全**と判断。
+**確認ログ**
 
-**v2 再挑戦方針（後日 TODO）**
+```
+peripheral: sent 7 byte notify
+central: notify received (7 bytes)
+peripheral=0 central=0 phy=0
+wr_link run: PASSED
+```
 
-- `BT_CONN_CB_DEFINE` を捨てて **`bt_conn_cb_register()` 動的登録版**を使う（`bs_test_post_init_f` で testid を見て自分のロール用 callback だけ登録）
-- ロール識別は `bs_tests` の `testid` 文字列を `bs_test_main_f` 入口で読んで static enum に格納
-- 並走 agent（私の別セッション）が `tests/bsim/wr_link/` + `.github/workflows/bsim.yml` のみ触って実装する
+**コミット系譜**: `23c1818`（v1 実装）→ `ed47783`（v1 revert）→ `1ffbfb1`（v2 動的 conn cb）→ `7611749`（CCC 待機）→ `5f476a5` / `994c4e9` / `f0a5c31`（discover 試行）→ `0f11a1d`（**最終 green**）
 
-**コミット**: `23c1818`（実装、4 file / +162 -8 行）/ `ed47783`（revert、4 file / +8 -162 行）
-
-**制約**:
-- 現在の `wr_link` 動作は §22.6 のまま（接続成立で PASS、notify は無し）
-- v2 着手まで bsim 経由の GATT notify エンドツーエンド検証は未保証
+**現状**:
+- `wr_link` は §22.6 の接続 verdict + notify exchange エンドツーエンド検証まで到達
+- bsim CI 上で GATT notify 経路が常時 green。multi-notify burst / backpressure 計測は別 issue で追跡
 
 ---
 
