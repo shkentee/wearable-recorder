@@ -67,20 +67,47 @@ Options:
   (header bytes stripped) in arrival order. **This is raw Opus
   frames, not an Ogg-Opus container** — see "Decoding to WAV" below.
 
-### Decoding to WAV
+### Opus decode (`--wav`)
 
-`--wav` will try `pyogg` first. Because the dump is raw concatenated
-Opus frames *without* OggS framing, pure `opuslib` is not enough on
-its own — you'd need to know each frame's length to feed it
-correctly. For now the recommended path is:
+`--wav` decodes the per-packet Opus payloads to a 16-bit signed PCM,
+mono WAV at 16 kHz (the omi firmware default). Because the parser
+already knows each notify's payload boundaries from the dump file,
+each packet's payload is fed to the Opus decoder as a single frame —
+**no Ogg container is required** when `opuslib` is used.
+
+Required dependency (either one is fine; `opuslib` is preferred):
 
 ```bash
-pip install pyogg
-python decode-dump.py dump.bin -o rec --wav
+pip install opuslib    # raw frame decode using packet boundaries
+# or
+pip install pyogg      # only works on a pre-wrapped Ogg-Opus container
 ```
 
-If you only need to inspect frame structure (e.g., debug BLE
-reliability), the JSON manifest is usually enough.
+Then:
+
+```bash
+python decode-dump.py dump.bin -o rec --wav
+# -> rec.json  rec.opus  rec.wav
+```
+
+Format produced:
+
+| field        | value                |
+|--------------|----------------------|
+| sample width | 16-bit signed PCM    |
+| channels     | mono                 |
+| sample rate  | 16000 Hz (default)   |
+
+If your firmware build runs the PDM mic at a different sampling rate,
+override it with `--rate`:
+
+```bash
+python decode-dump.py dump.bin -o rec --wav --rate 24000
+```
+
+When neither `opuslib` nor `pyogg` is importable, `--wav` warns and
+exits 0 (raw `<prefix>.opus` is still produced for offline conversion).
+This is what keeps the CI image deps-free.
 
 ### Continuity logging
 

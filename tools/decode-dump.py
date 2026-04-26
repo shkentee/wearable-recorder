@@ -22,13 +22,18 @@ Outputs:
                     (header bytes stripped, frames in arrival order)
 
 Optional:
-    --wav           also try to decode <prefix>.opus -> <prefix>.wav
-                    using pyogg or opuslib if available. Skipped with a
-                    warning when neither is importable.
+    --wav           also decode <prefix>.opus -> <prefix>.wav using
+                    opuslib (preferred — works on raw concatenated
+                    frames) or pyogg (Ogg-Opus container fallback).
+                    Skipped with a warning when neither is importable
+                    so CI runs that don't install Opus deps still
+                    succeed (raw .opus is always written).
+    --rate HZ       PCM sample rate fed to the Opus decoder
+                    (default 16000Hz, omi firmware default).
 
 The decoder is pure-stdlib; only the `--wav` path needs an external
-package and the user is expected to `pip install pyogg` (or `opuslib`)
-themselves.
+package and the user is expected to `pip install opuslib` (or
+`pyogg`) themselves.
 """
 from __future__ import annotations
 
@@ -249,44 +254,166 @@ def write_outputs(
     return json_path, opus_path
 
 
-def try_write_wav(opus_path: Path, wav_path: Path) -> bool:
-    """Best-effort Opus -> WAV conversion. Returns True on success."""
-    # Try pyogg first.
+DEFAULT_SAMPLE_RATE = 16000
+
+
+def _write_wav_header_only(wav_path: Path, rate: int) -> None:
+    """Write a 16-bit mono PCM WAV with zero audio frames.
+
+    Used when --wav was requested but there is no payload to decode
+    (or no decoder importable + no packets). Keeps downstream tooling
+    that expects the file to exist happy.
+    """
+    import wave
+
+    with wave.open(str(wav_path), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)  # 16-bit PCM
+        wf.setframerate(rate)
+        wf.writeframes(b"")
+
+
+def _decode_with_opuslib(
+    packets: List[Packet],
+    src: bytes,
+    wav_path: Path,
+    rate: int,
+) -> bool:
+    """Decode each packet's Opus payload as a single Opus frame and
+    splat the PCM into a 16-bit mono WAV.
+
+    omi firmware emits one Opus frame per BLE notify, so per-packet
+    payload boundaries (from the manifest) are exactly what
+    ``opuslib.Decoder.decode`` needs — no Ogg framing required.
+    Returns True on success (decoder importable + WAV written),
+    False if opuslib is not importable.
+    """
+    try:
+        import opuslib  # type: ignore
+    except ImportError:
+        return False
+
+    import wave
+
+    # 60ms is the largest standard Opus frame; at 48kHz that's 2880
+    # samples. We use that as a generous decode buffer regardless of
+    # the configured rate.
+    max_frame_samples = max(int(rate * 0.06), 960)
+    try:
+        decoder = opuslib.Decoder(rate, 1)
+    except Exception as exc:  # pragma: no cover - depends on env
+        logger.warning(
+            "opuslib.Decoder init failed (rate=%d): %s", rate, exc
+        )
+        return False
+
+    pcm_chunks: List[bytes] = []
+    decoded = 0
+    skipped = 0
+    for pkt in packets:
+        start = pkt.offset_in_file + HEADER_SIZE
+        end = start + pkt.payload_len
+        frame = src[start:end]
+        if not frame:
+            continue
+        try:
+            pcm = decoder.decode(bytes(frame), max_frame_samples)
+        except Exception as exc:
+            logger.info(
+                "opuslib decode failed for packet_id=%d frame_id=%d: %s",
+                pkt.packet_id,
+                pkt.frame_id,
+                exc,
+            )
+            skipped += 1
+            continue
+        pcm_chunks.append(pcm)
+        decoded += 1
+
+    with wave.open(str(wav_path), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(rate)
+        for chunk in pcm_chunks:
+            wf.writeframes(chunk)
+
+    logger.info(
+        "wrote %s via opuslib (decoded=%d, skipped=%d, rate=%dHz)",
+        wav_path,
+        decoded,
+        skipped,
+        rate,
+    )
+    return True
+
+
+def _decode_with_pyogg(opus_path: Path, wav_path: Path) -> bool:
+    """Decode via pyogg's OpusFile (expects Ogg-Opus framing).
+
+    The raw concatenated .opus we write is *not* OggS-framed, so this
+    path mostly succeeds when the user pre-wrapped the file. Returns
+    True on success.
+    """
     try:
         import pyogg  # type: ignore
     except ImportError:
-        pyogg = None  # type: ignore
-    if pyogg is not None:
-        try:
-            opus_file = pyogg.OpusFile(str(opus_path))
-            import wave
-
-            with wave.open(str(wav_path), "wb") as wf:
-                wf.setnchannels(opus_file.channels)
-                wf.setsampwidth(2)  # 16-bit PCM
-                wf.setframerate(opus_file.frequency)
-                wf.writeframes(bytes(opus_file.as_array()))
-            logger.info("wrote %s via pyogg", wav_path)
-            return True
-        except Exception as exc:  # pragma: no cover - depends on env
-            logger.warning("pyogg failed to decode %s: %s", opus_path, exc)
-
-    # Try opuslib (raw frame decoder — would need framing info we
-    # don't have, so this is mostly a stub for future work).
+        return False
     try:
-        import opuslib  # type: ignore  # noqa: F401
-        logger.warning(
-            "opuslib is installed but raw concatenated Opus frames "
-            "without OggS framing cannot be decoded directly; "
-            "consider using pyogg or wrapping frames in an Ogg "
-            "container first."
+        opus_file = pyogg.OpusFile(str(opus_path))
+    except Exception as exc:  # pragma: no cover - depends on env
+        logger.info("pyogg could not open %s: %s", opus_path, exc)
+        return False
+
+    import wave
+
+    try:
+        with wave.open(str(wav_path), "wb") as wf:
+            wf.setnchannels(opus_file.channels)
+            wf.setsampwidth(2)  # 16-bit PCM
+            wf.setframerate(opus_file.frequency)
+            wf.writeframes(bytes(opus_file.as_array()))
+    except Exception as exc:  # pragma: no cover - depends on env
+        logger.warning("pyogg failed to write WAV %s: %s", wav_path, exc)
+        return False
+
+    logger.info("wrote %s via pyogg", wav_path)
+    return True
+
+
+def try_write_wav(
+    packets: List[Packet],
+    src: bytes,
+    opus_path: Path,
+    wav_path: Path,
+    rate: int = DEFAULT_SAMPLE_RATE,
+) -> bool:
+    """Best-effort Opus -> WAV conversion.
+
+    Tries opuslib first because we have per-frame payload boundaries
+    in ``packets`` and the dump is raw frames. Falls back to pyogg
+    (Ogg-Opus container). When no decoder is importable:
+
+    * if ``packets`` is empty, write a header-only WAV and return
+      True (the file exists at the expected path);
+    * otherwise log a warning and return False without writing
+      anything (raw .opus is still on disk for offline conversion).
+    """
+    if _decode_with_opuslib(packets, src, wav_path, rate):
+        return True
+    if _decode_with_pyogg(opus_path, wav_path):
+        return True
+
+    if not packets:
+        _write_wav_header_only(wav_path, rate)
+        logger.info(
+            "wrote header-only %s (no packets to decode)", wav_path
         )
-    except ImportError:
-        pass
+        return True
 
     logger.warning(
-        "no usable Opus decoder found; install pyogg "
-        "(`pip install pyogg`) to enable --wav output"
+        "no usable Opus decoder found; install opuslib "
+        "(`pip install opuslib`) or pyogg (`pip install pyogg`) "
+        "to enable --wav output"
     )
     return False
 
@@ -318,7 +445,19 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument(
         "--wav",
         action="store_true",
-        help="also write <prefix>.wav (requires pyogg)",
+        help=(
+            "also write <prefix>.wav (requires opuslib or pyogg; "
+            "no-op with warning if neither is importable)"
+        ),
+    )
+    parser.add_argument(
+        "--rate",
+        type=int,
+        default=DEFAULT_SAMPLE_RATE,
+        help=(
+            "PCM sample rate for the Opus decoder in Hz "
+            f"(default: {DEFAULT_SAMPLE_RATE})"
+        ),
     )
     parser.add_argument(
         "-v",
@@ -350,7 +489,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.wav:
         wav_path = prefix.with_suffix(".wav")
-        try_write_wav(opus_path, wav_path)
+        try_write_wav(packets, data, opus_path, wav_path, rate=args.rate)
 
     return 0
 
