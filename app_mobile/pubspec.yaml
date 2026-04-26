@@ -16,11 +16,7 @@ dependencies:
   # flutter_blue_plus is the maintained successor of flutter_blue with
   # solid Android 13 / iOS 17 support and no native build steps beyond
   # platform permissions in AndroidManifest.xml / Info.plist.
-  # Bumped from ^1.32.12 to ^2.2.1: the 1.x line ships flutter_blue_plus_android
-  # 7.0.4 whose android/build.gradle uses the legacy `flutter` extension that
-  # is no longer provided by Flutter 3.24's scaffolding (`flutter create`).
-  # 2.x has no API breakage vs 1.x (changelog: "switch to FlutterBluePlus license").
-  flutter_blue_plus: ^2.2.1
+  flutter_blue_plus: ^1.32.12
 
   # Permissions for Android 12+ scan / connect prompts.
   permission_handler: ^11.3.1
