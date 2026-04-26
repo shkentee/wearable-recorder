@@ -1,0 +1,47 @@
+name: mobile
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'app_mobile/**'
+      - '.github/workflows/mobile.yml'
+  pull_request:
+    paths:
+      - 'app_mobile/**'
+      - '.github/workflows/mobile.yml'
+  workflow_dispatch:
+
+jobs:
+  flutter-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        # All Flutter commands run from app_mobile/.
+        working-directory: app_mobile
+    steps:
+      - name: Checkout repo (no submodules — Flutter side doesn't need omi)
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Set up Flutter 3.24 (stable)
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.24.0'
+          channel: stable
+          cache: true
+
+      - name: Show toolchain versions
+        run: |
+          flutter --version
+          dart --version
+
+      - name: Resolve dependencies
+        run: flutter pub get
+
+      - name: Static analysis
+        run: flutter analyze
+
+      - name: Unit tests (Dart VM, no device required)
+        run: flutter test --reporter expanded

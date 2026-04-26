@@ -21,6 +21,10 @@ dependencies:
   # Permissions for Android 12+ scan / connect prompts.
   permission_handler: ^11.3.1
 
+  # App-documents directory for dumping audioCodec packets to disk;
+  # PC-side tooling re-parses the headers offline.
+  path_provider: ^2.1.4
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

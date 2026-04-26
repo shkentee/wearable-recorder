@@ -14,6 +14,7 @@ class DevicePage extends StatefulWidget {
 class _DevicePageState extends State<DevicePage> {
   String _status = 'connecting…';
   int _packets = 0;
+  int _savedBytes = 0;
 
   @override
   void initState() {
@@ -25,6 +26,10 @@ class _DevicePageState extends State<DevicePage> {
     widget.device.packetCount.listen((n) {
       if (!mounted) return;
       setState(() => _packets = n);
+    });
+    widget.device.bytesSaved.listen((n) {
+      if (!mounted) return;
+      setState(() => _savedBytes = n);
     });
     _connect();
   }
@@ -59,10 +64,13 @@ class _DevicePageState extends State<DevicePage> {
             const SizedBox(height: 8),
             Text('audioCodec packets: $_packets',
                 style: Theme.of(context).textTheme.headlineSmall),
+            const SizedBox(height: 8),
+            Text('Saved bytes: $_savedBytes',
+                style: Theme.of(context).textTheme.titleMedium),
             const Spacer(),
             const Text(
-              'Phase 6 MVP: notify subscription only. Decode + persist '
-              'land in the next sprint.',
+              'Phase 6 MVP: notify subscription + raw dump. Opus decode '
+              'runs offline on a paired PC.',
               style: TextStyle(fontStyle: FontStyle.italic),
             ),
           ],
