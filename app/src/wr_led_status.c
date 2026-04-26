@@ -1,36 +1,29 @@
 /*
  * Phase 4-5: LED state machine on top of omi's led.c.
  *
- * omi exposes set_led_red/green/blue (pure GPIO toggles). This module
- * runs a 100 ms tick that picks the highest-priority pattern and drives
- * the three GPIOs accordingly.
- *
- * Pattern table (matches the spec D3 + D16 decisions):
- *   BATT_CRIT  (<=5%)  red fast blink (250 ms on / 250 ms off)        [pri 0]
- *   BATT_LOW   (<=20%) orange blink (500 ms cycle, R+G)                [pri 1]
- *   SD_FULL            red solid                                        [pri 2]
- *   SD_MISSING         blue 1 s blink                                   [pri 3]
- *   CHARGED            green solid                                      [pri 4]
- *   CHARGING           yellow (R+G) heartbeat — 50 ms / 5 s             [pri 5]
- *   BLE_CONNECTED      green heartbeat                                  [pri 6]
- *   RECORDING          white (R+G+B) heartbeat                          [pri 6]
- *   IDLE               all off                                          [pri 7]
+ * Pure pattern logic lives in wr_led_pick.c — this file is just the
+ * Zephyr glue: a 100 ms timer that gathers state into a wr_led_state,
+ * calls wr_led_pick() to get the desired RGB triplet, and drives omi's
+ * set_led_red/green/blue.
  *
  * Heartbeat duty 1% (50 ms / 5 s) keeps platform-wide LED current under
  * +0.01 mA — see spec §11.2 / §14.2.
  *
  * Inputs we read today:
  *   - is_connected (BLE) from transport.c
+ *   - test-hook setters for battery / SD / charging
  *
  * Inputs deferred (TODO): battery ADC, SD-state probing, USB-charging
  * detection. Until those land the warning patterns can be exercised by
- * setting the static flags in wr_led_status.c via test hooks.
+ * setting the static flags via wr_led_status_set_*().
  */
 
 #include <zephyr/init.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <stdbool.h>
+
+#include "wr_led_pick.h"
 
 LOG_MODULE_REGISTER(wr_led_status, CONFIG_LOG_DEFAULT_LEVEL);
 
@@ -52,64 +45,34 @@ static volatile bool wr_led_sd_full   = false;
 static volatile bool wr_led_sd_missing = false;
 static volatile uint8_t wr_led_batt_pct = 100;
 
-/* Public test hooks — header to follow when more callers exist. */
+/* Public test hooks. */
 void wr_led_status_set_charging(bool on)    { wr_led_charging = on;  wr_led_charged = false; }
 void wr_led_status_set_charged(bool on)     { wr_led_charged = on;   wr_led_charging = false; }
 void wr_led_status_set_sd_full(bool on)     { wr_led_sd_full = on; }
 void wr_led_status_set_sd_missing(bool on)  { wr_led_sd_missing = on; }
 void wr_led_status_set_batt_pct(uint8_t p)  { wr_led_batt_pct = p; }
 
-static void apply_rgb(bool r, bool g, bool b)
-{
-	set_led_red(r);
-	set_led_green(g);
-	set_led_blue(b);
-}
-
 static void wr_led_tick(struct k_timer *t)
 {
 	ARG_UNUSED(t);
 
-	/* Tick counter. 50 ms granularity from a 100 ms timer is enough for
-	 * the patterns we care about. */
 	static uint32_t tick;          /* 100 ms units */
 	tick++;
 
-	const uint32_t in_5s_window = tick % 50;        /* 0..49 (5 s cycle) */
-	const uint32_t hb_on = (in_5s_window == 0);     /* first 100 ms */
-	const uint32_t blink_500ms = (tick % 5) < 3;    /* slow blink ~60% on */
-	const uint32_t blink_250ms = (tick % 5) < 3 ?
-				     ((tick % 3) < 2) : ((tick % 3) < 2); /* coarse fast */
-	const uint32_t blink_1s = (tick % 10) < 5;
+	struct wr_led_state s = {
+		.batt_pct      = wr_led_batt_pct,
+		.sd_full       = wr_led_sd_full,
+		.sd_missing    = wr_led_sd_missing,
+		.charged       = wr_led_charged,
+		.charging      = wr_led_charging,
+		.ble_connected = is_connected,
+		.recording     = wr_led_recording,
+	};
 
-	/* Pick highest-priority pattern. */
-	if (wr_led_batt_pct <= 5) {
-		apply_rgb(blink_250ms, false, false);             /* red fast */
-	} else if (wr_led_batt_pct <= 20) {
-		apply_rgb(blink_500ms, blink_500ms, false);       /* orange */
-	} else if (wr_led_sd_full) {
-		apply_rgb(true, false, false);                     /* red solid */
-	} else if (wr_led_sd_missing) {
-		apply_rgb(false, false, blink_1s);                 /* blue blink */
-	} else if (wr_led_charged) {
-		apply_rgb(false, true, false);                     /* green solid */
-	} else if (wr_led_charging) {
-		apply_rgb(hb_on, hb_on, false);                    /* yellow HB */
-	} else if (is_connected && wr_led_recording) {
-		/* Alternate green HB and white HB on each 5 s cycle. */
-		const uint32_t cycle = (tick / 50) & 1;
-		if (cycle) {
-			apply_rgb(hb_on, hb_on, hb_on);            /* white HB */
-		} else {
-			apply_rgb(false, hb_on, false);            /* green HB */
-		}
-	} else if (is_connected) {
-		apply_rgb(false, hb_on, false);                    /* green HB */
-	} else if (wr_led_recording) {
-		apply_rgb(hb_on, hb_on, hb_on);                    /* white HB */
-	} else {
-		apply_rgb(false, false, false);                    /* idle */
-	}
+	struct wr_led_rgb out = wr_led_pick(s, tick);
+	set_led_red(out.r);
+	set_led_green(out.g);
+	set_led_blue(out.b);
 }
 
 static struct k_timer wr_led_timer;
