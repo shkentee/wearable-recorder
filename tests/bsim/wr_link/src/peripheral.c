@@ -16,12 +16,14 @@
 #include "wr_bs_utils.h"
 
 #include <zephyr/bluetooth/gatt.h>
+#include <string.h>
 
 #define WR_LINK_BURST_COUNT 5
 #define WR_LINK_BURST_INTERVAL_MS 50
 
 DEFINE_FLAG(flag_peer_connected);
 DEFINE_FLAG(flag_notify_sent);
+DEFINE_FLAG(flag_time_sync_received);
 
 static struct bt_conn *peer_conn;
 static struct k_work_delayable notify_work;
@@ -51,6 +53,50 @@ BT_GATT_SERVICE_DEFINE(audio_svc,
 			       NULL, NULL, NULL),
 	BT_GATT_CCC(ccc_cfg_changed,
 		    BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+);
+
+/* D7 time-sync service: single WRITE_WITHOUT_RESP characteristic.
+ * Mirrors app/src/wr_time_sync.c — service UUID doubles as char UUID. */
+static ssize_t time_sync_write(struct bt_conn *conn,
+			       const struct bt_gatt_attr *attr,
+			       const void *buf, uint16_t len,
+			       uint16_t offset, uint8_t flags)
+{
+	ARG_UNUSED(conn);
+	ARG_UNUSED(attr);
+	ARG_UNUSED(offset);
+	ARG_UNUSED(flags);
+
+	if (len != sizeof(uint64_t)) {
+		FAIL("peripheral: time-sync write: expected 8 bytes, got %u\n",
+		     (unsigned)len);
+		return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+	}
+
+	uint64_t epoch;
+	memcpy(&epoch, buf, sizeof(epoch));
+
+	bs_trace_info_time(1,
+		"peripheral: time-sync epoch received: 0x%016llx\n",
+		(unsigned long long)epoch);
+
+	if (epoch != WR_LINK_TIME_SYNC_EPOCH) {
+		FAIL("peripheral: epoch 0x%016llx != expected 0x%016llx\n",
+		     (unsigned long long)epoch,
+		     (unsigned long long)WR_LINK_TIME_SYNC_EPOCH);
+		return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+	}
+
+	SET_FLAG(flag_time_sync_received);
+	return (ssize_t)len;
+}
+
+BT_GATT_SERVICE_DEFINE(time_sync_svc,
+	BT_GATT_PRIMARY_SERVICE(BT_UUID_WR_TIME_SYNC),
+	BT_GATT_CHARACTERISTIC(BT_UUID_WR_TIME_SYNC,
+			       BT_GATT_CHRC_WRITE_WITHOUT_RESP,
+			       BT_GATT_PERM_WRITE,
+			       NULL, time_sync_write, NULL),
 );
 
 static void notify_worker(struct k_work *work)
@@ -140,5 +186,6 @@ void wr_run_peripheral(void)
 
 	WAIT_FOR_FLAG(flag_peer_connected);
 	WAIT_FOR_FLAG(flag_notify_sent);
-	PASS("peripheral: link + notify sent\n");
+	WAIT_FOR_FLAG(flag_time_sync_received);
+	PASS("peripheral: link + notify burst + time-sync received\n");
 }

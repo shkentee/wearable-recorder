@@ -64,6 +64,19 @@ extern enum bst_result_t bst_result;
 	{ 0x42, 0x00, 0x00, /* header: pkt 0x0042, frame 0 */ \
 	  'A', 'B', 'C', 'D' /* dummy "Opus" payload */ }
 
+/* D7 time-sync write characteristic (UUID 19B10005-...).
+ * Service UUID doubles as the characteristic UUID — single-char service,
+ * mirrors app/src/wr_time_sync.c. Central writes 8-byte LE64 Unix epoch;
+ * peripheral echoes it back as a GATT indication and validates content. */
+#define BT_UUID_WR_TIME_SYNC_VAL \
+	BT_UUID_128_ENCODE(0x19B10005, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214)
+#define BT_UUID_WR_TIME_SYNC \
+	BT_UUID_DECLARE_128(BT_UUID_WR_TIME_SYNC_VAL)
+
+/* Fixed test epoch used by the central; peripheral validates the received value.
+ * LE64 bytes: {0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01}. */
+#define WR_LINK_TIME_SYNC_EPOCH 0x0102030405060708ULL
+
 void wr_test_init(void);
 void wr_test_tick(bs_time_t HW_device_time);
 

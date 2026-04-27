@@ -20,6 +20,7 @@
 DEFINE_FLAG(flag_central_connected);
 DEFINE_FLAG(flag_audio_subscribed);
 DEFINE_FLAG(flag_notify_received);
+DEFINE_FLAG(flag_time_sync_written);
 
 static struct bt_conn *default_conn;
 static uint32_t notify_received_count;
@@ -79,12 +80,30 @@ static uint8_t notify_cb(struct bt_conn *conn,
 	return BT_GATT_ITER_CONTINUE;
 }
 
+/* LE64 encoding of WR_LINK_TIME_SYNC_EPOCH — written to the time-sync char. */
+static const uint8_t time_sync_epoch_le[8] = {
+	(uint8_t)(WR_LINK_TIME_SYNC_EPOCH & 0xff),
+	(uint8_t)((WR_LINK_TIME_SYNC_EPOCH >>  8) & 0xff),
+	(uint8_t)((WR_LINK_TIME_SYNC_EPOCH >> 16) & 0xff),
+	(uint8_t)((WR_LINK_TIME_SYNC_EPOCH >> 24) & 0xff),
+	(uint8_t)((WR_LINK_TIME_SYNC_EPOCH >> 32) & 0xff),
+	(uint8_t)((WR_LINK_TIME_SYNC_EPOCH >> 40) & 0xff),
+	(uint8_t)((WR_LINK_TIME_SYNC_EPOCH >> 48) & 0xff),
+	(uint8_t)((WR_LINK_TIME_SYNC_EPOCH >> 56) & 0xff),
+};
+
 static uint8_t discover_cb(struct bt_conn *conn,
 			   const struct bt_gatt_attr *attr,
 			   struct bt_gatt_discover_params *params)
 {
 	if (!attr) {
-		FAIL("central: discovery completed without finding audioCodec\n");
+		/* Discovery exhausted all handles — verify both targets found. */
+		if (!(bool)atomic_get(&flag_audio_subscribed)) {
+			FAIL("central: discovery ended without finding audioCodec\n");
+		}
+		if (!(bool)atomic_get(&flag_time_sync_written)) {
+			FAIL("central: discovery ended without finding time-sync char\n");
+		}
 		return BT_GATT_ITER_STOP;
 	}
 
@@ -92,24 +111,46 @@ static uint8_t discover_cb(struct bt_conn *conn,
 	 * its uuid is the chrc value's UUID (the one we care about).
 	 * Mirrors zephyr/tests/bsim/bluetooth/host/gatt/notify pattern. */
 	const struct bt_gatt_chrc *chrc = attr->user_data;
-	if (bt_uuid_cmp(chrc->uuid, BT_UUID_OMI_AUDIO_CODEC) != 0) {
-		return BT_GATT_ITER_CONTINUE;
+
+	/* audioCodec: subscribe, then keep walking for the time-sync char. */
+	if (bt_uuid_cmp(chrc->uuid, BT_UUID_OMI_AUDIO_CODEC) == 0) {
+		bs_trace_info_time(1,
+			"central: found audioCodec chrc, value_handle=%u\n",
+			chrc->value_handle);
+		sub_params.notify = notify_cb;
+		sub_params.value = BT_GATT_CCC_NOTIFY;
+		sub_params.value_handle = chrc->value_handle;
+		/* CCC sits one handle past the chrc value attribute. */
+		sub_params.ccc_handle = chrc->value_handle + 1;
+		int err = bt_gatt_subscribe(conn, &sub_params);
+		if (err && err != -EALREADY) {
+			FAIL("central: subscribe failed (%d)\n", err);
+			return BT_GATT_ITER_STOP;
+		}
+		SET_FLAG(flag_audio_subscribed);
+		return BT_GATT_ITER_CONTINUE; /* keep walking for time-sync */
 	}
 
-	bs_trace_info_time(1, "central: found audioCodec chrc, value_handle=%u\n",
-			   chrc->value_handle);
-	sub_params.notify = notify_cb;
-	sub_params.value = BT_GATT_CCC_NOTIFY;
-	sub_params.value_handle = chrc->value_handle;
-	/* CCC sits one handle past the chrc value attribute. */
-	sub_params.ccc_handle = chrc->value_handle + 1;
-	int err = bt_gatt_subscribe(conn, &sub_params);
-	if (err && err != -EALREADY) {
-		FAIL("central: subscribe failed (%d)\n", err);
-		return BT_GATT_ITER_STOP;
+	/* D7 time-sync char: write the fixed test epoch as LE64. */
+	if (bt_uuid_cmp(chrc->uuid, BT_UUID_WR_TIME_SYNC) == 0) {
+		bs_trace_info_time(1,
+			"central: found time-sync chrc, value_handle=%u, writing epoch\n",
+			chrc->value_handle);
+		int err = bt_gatt_write_without_response(conn,
+							 chrc->value_handle,
+							 time_sync_epoch_le,
+							 sizeof(time_sync_epoch_le),
+							 false);
+		if (err) {
+			FAIL("central: time-sync write_without_response failed (%d)\n",
+			     err);
+			return BT_GATT_ITER_STOP;
+		}
+		SET_FLAG(flag_time_sync_written);
+		return BT_GATT_ITER_STOP; /* both targets handled */
 	}
-	SET_FLAG(flag_audio_subscribed);
-	return BT_GATT_ITER_STOP;
+
+	return BT_GATT_ITER_CONTINUE;
 }
 
 static void start_discovery(struct bt_conn *conn)
@@ -224,6 +265,7 @@ void wr_run_central(void)
 	WAIT_FOR_FLAG(flag_central_connected);
 	WAIT_FOR_FLAG(flag_audio_subscribed);
 	WAIT_FOR_FLAG(flag_notify_received);
-	PASS("central: link + %u-packet audio notify burst received\n",
+	WAIT_FOR_FLAG(flag_time_sync_written);
+	PASS("central: link + %u-packet burst + time-sync written\n",
 	     WR_LINK_EXPECT_NOTIFY_COUNT);
 }
