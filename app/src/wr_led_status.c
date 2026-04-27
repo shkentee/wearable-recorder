@@ -13,9 +13,9 @@
  *   - is_connected (BLE) from transport.c
  *   - test-hook setters for battery / SD / charging
  *
- * Inputs deferred (TODO): battery ADC, SD-state probing, USB-charging
- * detection. Until those land the warning patterns can be exercised by
- * setting the static flags via wr_led_status_set_*().
+ * Inputs deferred (TODO): SD-state probing, USB-charging detection.
+ * Until those land the warning patterns can be exercised by setting the
+ * static flags via wr_led_status_set_*().
  */
 
 #include <zephyr/init.h>
@@ -26,6 +26,51 @@
 #include "wr_led_pick.h"
 
 LOG_MODULE_REGISTER(wr_led_status, CONFIG_LOG_DEFAULT_LEVEL);
+
+#if IS_ENABLED(CONFIG_ADC)
+#include <zephyr/drivers/adc.h>
+#include "wr_battery.h"
+
+#define WR_BATT_ADC_CHANNEL        7    /* AIN7 = P0.31 */
+#define WR_BATT_ADC_INTERVAL_TICKS 100  /* every 100 × 100 ms = 10 s */
+
+static const struct device *batt_adc_dev;
+static int16_t batt_raw;
+
+/* NOTE: OMI firmware uses ADC_GAIN_1_6; verify gain matches HW divider in Phase 5. */
+static struct adc_channel_cfg batt_ch_cfg = {
+	.gain             = ADC_GAIN_1_4,
+	.reference        = ADC_REF_INTERNAL,
+	.acquisition_time = ADC_ACQ_TIME_DEFAULT,
+	.channel_id       = WR_BATT_ADC_CHANNEL,
+#ifdef CONFIG_ADC_NRFX_SAADC
+	.input_positive   = SAADC_CH_PSELP_PSELP_AnalogInput7,
+#endif
+};
+
+static struct adc_sequence batt_adc_seq = {
+	.channels    = BIT(WR_BATT_ADC_CHANNEL),
+	.buffer      = &batt_raw,
+	.buffer_size = sizeof(batt_raw),
+	.resolution  = 12,
+};
+
+static void batt_adc_worker(struct k_work *work)
+{
+	ARG_UNUSED(work);
+	if (!batt_adc_dev) {
+		return;
+	}
+	int err = adc_read(batt_adc_dev, &batt_adc_seq);
+	if (err) {
+		LOG_WRN("wr_battery: adc_read failed (%d)", err);
+		return;
+	}
+	wr_led_batt_pct = wr_battery_mv_to_pct(wr_battery_raw_to_mv(batt_raw));
+}
+
+static K_WORK_DEFINE(batt_adc_work, batt_adc_worker);
+#endif /* CONFIG_ADC */
 
 /* omi's led.c API */
 void set_led_red(bool on);
@@ -59,6 +104,12 @@ static void wr_led_tick(struct k_timer *t)
 	static uint32_t tick;          /* 100 ms units */
 	tick++;
 
+#if IS_ENABLED(CONFIG_ADC)
+	if (tick % WR_BATT_ADC_INTERVAL_TICKS == 0) {
+		k_work_submit(&batt_adc_work);
+	}
+#endif
+
 	struct wr_led_state s = {
 		.batt_pct      = wr_led_batt_pct,
 		.sd_full       = wr_led_sd_full,
@@ -79,6 +130,20 @@ static struct k_timer wr_led_timer;
 
 static int wr_led_status_init(void)
 {
+#if IS_ENABLED(CONFIG_ADC)
+	batt_adc_dev = DEVICE_DT_GET(DT_NODELABEL(adc));
+	if (!device_is_ready(batt_adc_dev)) {
+		LOG_WRN("wr_battery: ADC device not ready");
+		batt_adc_dev = NULL;
+	} else {
+		int err = adc_channel_setup(batt_adc_dev, &batt_ch_cfg);
+		if (err) {
+			LOG_WRN("wr_battery: adc_channel_setup failed (%d)", err);
+			batt_adc_dev = NULL;
+		}
+	}
+#endif
+
 	k_timer_init(&wr_led_timer, wr_led_tick, NULL);
 	/* Hold off the first tick by 2 s so omi's main() has a chance to
 	 * call led_start() (which configures the GPIOs). Without the
