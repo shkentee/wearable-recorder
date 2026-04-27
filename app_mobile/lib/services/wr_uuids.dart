@@ -13,6 +13,11 @@ class WrUuids {
   // DFU service (nrf standard).
   static const String dfuService = '00001530-1212-efde-1523-785feabcd123';
 
+  // Time-sync service (D7): write 8-byte LE64 Unix epoch to sync firmware clock.
+  // Service UUID doubles as the characteristic UUID (single-characteristic service).
+  static const String timeSyncService = '19b10005-e8f2-537e-4f6c-d104768a1214';
+  static const String timeSyncChar    = '19b10005-e8f2-537e-4f6c-d104768a1214';
+
   // Storage data stream service (chunk fetch).
   static const String storageService     = '30295780-4301-eabd-2904-2849adfeae43';
   static const String storageStream      = '30295781-4301-eabd-2904-2849adfeae43';

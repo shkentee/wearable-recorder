@@ -57,6 +57,41 @@ class WrBleDevice {
     _sink = _injectedSink ?? await _defaultSink();
     await codec.setNotifyValue(true);
     _notifySub = codec.lastValueStream.listen(_onPacket);
+    // D7: send current epoch so firmware uses wall-clock filenames.
+    await _trySendTimeSync(services);
+  }
+
+  /// Writes the current Unix epoch (seconds) to the D7 time-sync characteristic.
+  ///
+  /// Best-effort: silently skips if the firmware doesn't expose the time-sync
+  /// service (bare omi builds, old firmware).
+  Future<void> _trySendTimeSync(List<BluetoothService> services) async {
+    try {
+      final svc = services.firstWhere(
+        (s) => s.serviceUuid == Guid(WrUuids.timeSyncService),
+      );
+      final char = svc.characteristics.firstWhere(
+        (c) => c.characteristicUuid == Guid(WrUuids.timeSyncChar),
+      );
+      final epochSecs = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+      await char.write(epochToBytes(epochSecs), withoutResponse: true);
+    } catch (_) {
+      // Old firmware or service not present — continue without time-sync.
+    }
+  }
+
+  /// Encodes [epochSecs] as a little-endian 8-byte list (LE64).
+  ///
+  /// Exposed as a static for unit-testing. The firmware's `wr_time_sync_write()`
+  /// expects exactly 8 bytes in little-endian order.
+  static List<int> epochToBytes(int epochSecs) {
+    final bytes = List<int>.filled(8, 0);
+    var v = epochSecs;
+    for (var i = 0; i < 8; i++) {
+      bytes[i] = v & 0xff;
+      v >>= 8;
+    }
+    return bytes;
   }
 
   Future<WrPacketSink> _defaultSink() async {

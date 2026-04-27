@@ -23,11 +23,11 @@
 | D2 | ボタン: D4(P0.04, OUT) + D5(P0.05, IN) | ✅ |
 | D3 | LED: ハートビート式 + 警告優先 | ✅ Phase 4-5 + 4-5+（純化 + 13 ztest。バッテリーADCフックは Phase 5）|
 | D4 | SD: Plan B（常時書き込み） | ✅ Phase 4-1（pusher() ファンアウト patch 適用済。実機ジッター測定は Phase 5）|
-| D5 | バッテリー: 200mAh一本 | ⏳ 実機調達 Phase 5 |
+| D5 | バッテリー: 200mAh一本 | 🟡 Phase 6（`wr_battery.c` SAADC 純粋計算 + 15 ztest 完了 §22.16。Zephyr SAADC glue + DT overlay は Phase 5 実機後）|
 | D6 | チャンク: 10分/file | ✅ Phase 4-2 + 4-6+（純化 + ztest。サイズ閾値は wr_chunk_logic 実装済、Phase 6 で配線）|
 | D7 | ファイル名: `<UNIX_epoch>.opus` / 未同期時 `unsynced_<bootid>_<seq>.opus` | ✅ Phase 4-6+ + Phase 6（純化ロジック + ztest + 3-kind 判別 / 削除順 OK。`wr_time_sync` GATT char + `wr_chunk_set_sync_time()` runtime 配線完了 §22.15）|
 | D8 | FIFO: 空き10%以下で最古から削除 | ✅ Phase 4-3 + 4-6+ + Phase 6（純化 + ztest + LEGACY/UNSYNCED/EPOCH classify + 削除優先度総順序、計 18 ztest 追加）|
-| D9 | USB MSC: ボタン長押し起動でMSCモード | 🟡 Phase 4-4 + 4-6+ + Phase 6（純化 + runtime-mode 述語 + chunk/fifo の MSC short-circuit 配線済 + 13 ztest。`usb_enable()` 実呼び出しのみ Phase 5 実機後）|
+| D9 | USB MSC: ボタン長押し起動でMSCモード | ✅ Phase 4-4 + 4-6+ + Phase 6（純化 + runtime-mode 述語 + chunk/fifo MSC short-circuit + 13 ztest + `usb_enable()` 実呼び出し + omi audio stack ゲート 0003 patch 完了 §22.17）|
 | D10 | Opus: 32kbps（omi標準）| ✅ |
 | D11 | DTX: 0（無効、omi標準）| ✅ |
 | D12 | 時刻同期: omi `performSyncTime()` | ✅ |
@@ -906,7 +906,7 @@ D8 の最古削除は §22.3 までフラット strcmp ベースだったが、P
 
 **コミット**: `fd7fb4e`（`Phase 6: wr_msc runtime-mode decision + chunk/fifo MSC short-circuit`）
 
-**制約**: `usb_enable()` の実呼び出しは Phase 5 実機 bring-up 後。LED 配線（`slow_blue_blink` ヒントを `wr_led_pick` に流す）も同時期。
+**制約**: LED 配線（`slow_blue_blink` ヒントを `wr_led_pick` に流す）は Phase 5 実機後。`usb_enable()` の実呼び出しは §22.17 で完了。
 
 ---
 
@@ -1127,5 +1127,79 @@ D7（`<UNIX_epoch>.opus` / `unsynced_<bootid8hex>_<seq5>.opus`）の純粋ロジ
 - `sys_rand32_get()` は Zephyr の entropy ドライバが必要（nRF52840 は HW RNG 搭載のため問題なし）
 
 **コミット**: `feat(firmware): D7 wire epoch/unsynced filename at runtime via wr_time_sync GATT write`
+
+---
+
+### 22.16 Phase 6: D5 バッテリー ADC — 純粋計算層
+
+D5（バッテリー 200 mAh 一本、SAADC 測定）の純粋計算部分（Zephyr 非依存）を実装した。
+
+**成果物**
+- `app/include/wr_battery.h`:
+  - `wr_battery_raw_to_mv(int16_t raw_adc) → uint16_t`: SAADC raw → mV 変換  
+    SAADC 設定: gain=1/4, Vref=0.6V, VBATT/2 分圧 → `raw * 4800 / 4096`
+  - `wr_battery_mv_to_pct(uint16_t vbat_mv) → uint8_t`: mV → 0-100% 変換  
+    LiPo 線形近似: 3000 mV (0%) – 4200 mV (100%); 端点クランプ
+- `app/src/wr_battery.c`: 上記 2 関数の実装
+
+**テスト**: `tests/firmware/wr_battery/` — **15 ztest**
+- ゼロ/負値クランプ、フルスケール、中点
+- LiPo 空 (raw=2560 → 3000 mV)、LiPo 満充電 (raw=3584 → 4200 mV)
+- pct クランプ (over/under)
+- パイプライン 3 点: raw=3072 → 3600 mV → 50%
+
+**制約**: Zephyr SAADC glue（`zephyr/drivers/adc.h`、DT overlay、`wr_led_status.c` への hook）は Phase 5 実機 bring-up 後。
+
+**コミット**: `4623ff5`（`feat(D5): wr_battery pure ADC math + 15 ztest`）
+
+---
+
+### 22.17 Phase 6: D9 完了 — `usb_enable()` runtime 呼び出し + omi audio stack ゲート
+
+§22.8 で構築した runtime-mode 述語に続き、USB MSC の実際の USB スタック起動とファームウェア録音側の短絡を完了させた。
+
+**成果物**
+- `app/src/wr_msc_mode.c`（更新）:
+  - `#include <zephyr/usb/usb_device.h>` 追加
+  - `wr_msc_mode_flag = true` のタイミングで `usb_enable(NULL)` を呼び出し
+  - `-EALREADY` は正常として無視（`CONFIG_USB_DEVICE_INITIALIZE_AT_BOOT=n` 構成で重複呼び出し対策）
+  - `CONFIG_UART_CONSOLE=y` により omi の `init_usb()` は status callback の登録のみ（`usb_disable()/re-enable` を行わない）ためコンフリクトなし
+- `app/patches/0003-msc-mode-gate-audio.patch`（新規）: omi の `main.c` に3ハンクを適用
+  1. `extern bool wr_msc_mode_is_active(void);` を `LOG_MODULE_REGISTER` 直後に挿入
+  2. MSC モードでなければ録音スタック（transport + codec + mic 初期化）を実行する `if (!wr_msc_mode_is_active())` 分岐を追加
+  3. `else` ブロックで 3×青 LED 点滅（0.5s ON/OFF）+ `LOG_INF("USB MSC mode active: recording stack disabled.")` を追加し main loop（watchdog_feed）へフォールスルー
+
+**動作フロー（D9 完全実装後）**
+1. 起動: `wr_msc_mode_boot_detect()` が D5 (P0.05) を 1 秒間サンプリング
+2. 80/100 以上 HIGH → `wr_msc_mode_flag = true`、`usb_enable(NULL)` でホストに USB MSC を公開
+3. `main()` 到達時: `if (!wr_msc_mode_is_active())` = false → 録音スタックをスキップ
+4. 3×青 LED 点滅後に main loop へ — watchdog は継続給電、SD は USB MSC で直接アクセス可能
+
+**コミット**: `3a12569`（`feat(D9): usb_enable in wr_msc_mode + 0003 gate-audio patch`）
+
+---
+
+### 22.18 Phase 6: Mobile Google Drive uploader + time-sync GATT write
+
+Flutter モバイルアプリに Google Drive アップロード機能（D17）と D7 time-sync 自動送信を追加した。
+
+**成果物**
+- `app_mobile/lib/services/wr_drive_uploader.dart`（新規）:
+  - `WrDriveUploader` — `google_sign_in` + `googleapis` Drive v3 を使って録音ファイルを "wearable-recordings/" フォルダにアップロード
+  - `WrDriveUploader.withApi(DriveApi)` テスト用コンストラクタ（BLE / Sign-in フローを完全にモック可）
+  - フォルダ ID をインスタンス内にキャッシュし、複数アップロードで `files.list()` を1回のみ呼ぶ
+  - MIME type: `audio/ogg; codecs=opus`
+- `app_mobile/lib/pages/device_page.dart`（更新）: FloatingActionButton "Upload to Drive" + `_uploading` フラグ + `_uploadToDriver()` メソッド
+- `app_mobile/lib/services/wr_uuids.dart`（更新）: `timeSyncService` / `timeSyncChar` = `19b10005-e8f2-537e-4f6c-d104768a1214`
+- `app_mobile/lib/services/wr_ble_device.dart`（更新）:
+  - `connect()` 完了後に `_trySendTimeSync(services)` を自動呼び出し
+  - `_trySendTimeSync()`: time-sync サービスが存在すれば現在 epoch を 8 バイト LE64 WRITE_WITHOUT_RESP で送信。サービスが見つからない場合はサイレントスキップ（旧ファームウェア互換）
+  - `epochToBytes(int epochSecs) → List<int>`: LE64 エンコーダ（static、unit test 可能）
+
+**テスト**
+- `test/wr_drive_uploader_test.dart`: 6 シナリオ（フォルダ作成・既存再利用・ID キャッシュ・null ID → StateError・Sign-In キャンセル → StateError・リモートファイル名検証）
+- `test/wr_time_sync_test.dart`: `epochToBytes` 6 ケース（0, 1, 256, 0x01020304, 2^32, 現在値の長さ）
+
+**コミット**: `0c0a0cc`（Drive uploader）/ 本セッション（time-sync GATT write）
 
 **EOF**
