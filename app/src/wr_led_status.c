@@ -27,6 +27,36 @@
 
 LOG_MODULE_REGISTER(wr_led_status, CONFIG_LOG_DEFAULT_LEVEL);
 
+/* omi's led.c API */
+void set_led_red(bool on);
+void set_led_green(bool on);
+void set_led_blue(bool on);
+
+/* From transport.c — true while a Central is connected. */
+extern bool is_connected;
+
+#define WR_LED_TICK_MS 100
+
+/* Inputs (external setters can plug into these as more signals come online). */
+static volatile bool wr_led_recording = true;       /* always-on for MVP */
+static volatile bool wr_led_charging  = false;
+static volatile bool wr_led_charged   = false;
+static volatile bool wr_led_sd_full   = false;
+static volatile bool wr_led_sd_missing = false;
+static volatile uint8_t wr_led_batt_pct = 100;
+
+/* Public test hooks. */
+void wr_led_status_set_charging(bool on)    { wr_led_charging = on;  wr_led_charged = false; }
+void wr_led_status_set_charged(bool on)     { wr_led_charged = on;   wr_led_charging = false; }
+void wr_led_status_set_sd_full(bool on)     { wr_led_sd_full = on; }
+void wr_led_status_set_sd_missing(bool on)  { wr_led_sd_missing = on; }
+void wr_led_status_set_batt_pct(uint8_t p)  { wr_led_batt_pct = p; }
+
+/* ---------------------------------------------------------------------------
+ * Battery ADC glue — compiled in only when the nRFx SAADC driver is enabled.
+ * batt_adc_worker is submitted from the timer ISR to the system workqueue
+ * because adc_read() is blocking and cannot run in ISR context.
+ * --------------------------------------------------------------------------- */
 #if IS_ENABLED(CONFIG_ADC)
 #include <zephyr/drivers/adc.h>
 #include "wr_battery.h"
@@ -71,31 +101,6 @@ static void batt_adc_worker(struct k_work *work)
 
 static K_WORK_DEFINE(batt_adc_work, batt_adc_worker);
 #endif /* CONFIG_ADC */
-
-/* omi's led.c API */
-void set_led_red(bool on);
-void set_led_green(bool on);
-void set_led_blue(bool on);
-
-/* From transport.c — true while a Central is connected. */
-extern bool is_connected;
-
-#define WR_LED_TICK_MS 100
-
-/* Inputs (external setters can plug into these as more signals come online). */
-static volatile bool wr_led_recording = true;       /* always-on for MVP */
-static volatile bool wr_led_charging  = false;
-static volatile bool wr_led_charged   = false;
-static volatile bool wr_led_sd_full   = false;
-static volatile bool wr_led_sd_missing = false;
-static volatile uint8_t wr_led_batt_pct = 100;
-
-/* Public test hooks. */
-void wr_led_status_set_charging(bool on)    { wr_led_charging = on;  wr_led_charged = false; }
-void wr_led_status_set_charged(bool on)     { wr_led_charged = on;   wr_led_charging = false; }
-void wr_led_status_set_sd_full(bool on)     { wr_led_sd_full = on; }
-void wr_led_status_set_sd_missing(bool on)  { wr_led_sd_missing = on; }
-void wr_led_status_set_batt_pct(uint8_t p)  { wr_led_batt_pct = p; }
 
 static void wr_led_tick(struct k_timer *t)
 {
