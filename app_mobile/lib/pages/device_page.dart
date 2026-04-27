@@ -6,6 +6,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../services/wr_ble_device.dart';
 import '../services/wr_drive_uploader.dart';
+import 'drive_files_page.dart';
 
 class DevicePage extends StatefulWidget {
   const DevicePage({
@@ -117,7 +118,21 @@ class _DevicePageState extends State<DevicePage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text(widget.device.name)),
+      appBar: AppBar(
+        title: Text(widget.device.name),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.cloud_queue),
+            tooltip: 'Drive recordings',
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => DriveFilesPage(uploader: _uploader),
+              ),
+            ),
+          ),
+        ],
+      ),
       body: Padding(
         padding: const EdgeInsets.all(24),
         child: Column(

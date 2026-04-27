@@ -127,6 +127,41 @@ class WrDriveUploader {
     return _cachedFolderId!;
   }
 
+  /// Lists all files in the "wearable-recordings/" Drive folder, most-recently
+  /// modified first. Returns an empty list if the folder does not exist yet.
+  Future<List<drive.File>> listFiles() async {
+    final api = await _buildApi();
+
+    String? folderId = _cachedFolderId;
+    if (folderId == null) {
+      const query =
+          "mimeType='application/vnd.google-apps.folder' and name='$_kFolderName' and trashed=false";
+      final result = await api.files.list(
+        q: query,
+        spaces: 'drive',
+        $fields: 'files(id)',
+      );
+      final folderFiles = result.files;
+      if (folderFiles == null || folderFiles.isEmpty) return [];
+      folderId = folderFiles.first.id!;
+      _cachedFolderId = folderId;
+    }
+
+    final result = await api.files.list(
+      q: "'$folderId' in parents and trashed=false",
+      spaces: 'drive',
+      $fields: 'files(id,name,modifiedTime)',
+      orderBy: 'modifiedTime desc',
+    );
+    return result.files ?? [];
+  }
+
+  /// Permanently deletes the Drive file identified by [fileId].
+  Future<void> deleteFile(String fileId) async {
+    final api = await _buildApi();
+    await api.files.delete(fileId);
+  }
+
   /// Uploads [localFile] to the "wearable-recordings/" Drive folder.
   ///
   /// [remoteFileName] is the name the file will have on Drive (e.g.

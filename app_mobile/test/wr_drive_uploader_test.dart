@@ -279,4 +279,86 @@ void main() {
       expect(capturedMeta?.parents, contains('f-folder'));
     });
   });
+
+  group('WrDriveUploader.listFiles', () {
+    // ------------------------------------------------------------------
+    // Scenario 7: folder not found → empty list returned without error.
+    // ------------------------------------------------------------------
+    test('returns empty list when the folder does not exist', () async {
+      when(() => mockFiles.list(
+            q: any(named: 'q'),
+            spaces: any(named: 'spaces'),
+            $fields: any(named: r'$fields'),
+          )).thenAnswer((_) async => drive.FileList()..files = []);
+
+      final uploader = WrDriveUploader.withApi(mockApi);
+      final files = await uploader.listFiles();
+
+      expect(files, isEmpty);
+      // Only one list() call — the folder lookup; no file-listing call.
+      verify(() => mockFiles.list(
+            q: any(named: 'q'),
+            spaces: any(named: 'spaces'),
+            $fields: any(named: r'$fields'),
+          )).called(1);
+    });
+
+    // ------------------------------------------------------------------
+    // Scenario 8: folder found, files exist → returns them in order.
+    //
+    // listFiles() calls list() twice: first to find the folder, then to
+    // enumerate files. We dispatch on the q parameter to return different
+    // responses.
+    // ------------------------------------------------------------------
+    test('returns file list when folder and files exist', () async {
+      when(() => mockFiles.list(
+            q: any(named: 'q'),
+            spaces: any(named: 'spaces'),
+            $fields: any(named: r'$fields'),
+          )).thenAnswer((inv) async {
+        final q = inv.namedArguments[#q] as String? ?? '';
+        if (q.contains('in parents')) {
+          return drive.FileList()
+            ..files = [
+              drive.File()
+                ..id = 'file-1'
+                ..name = 'session-001.opus',
+              drive.File()
+                ..id = 'file-2'
+                ..name = 'session-002.opus',
+            ];
+        }
+        // Folder-lookup call.
+        return drive.FileList()..files = [drive.File()..id = 'folder-id'];
+      });
+
+      final uploader = WrDriveUploader.withApi(mockApi);
+      final files = await uploader.listFiles();
+
+      expect(files, hasLength(2));
+      expect(files[0].name, 'session-001.opus');
+      expect(files[1].name, 'session-002.opus');
+      // Two list() calls: folder lookup + file enumeration.
+      verify(() => mockFiles.list(
+            q: any(named: 'q'),
+            spaces: any(named: 'spaces'),
+            $fields: any(named: r'$fields'),
+          )).called(2);
+    });
+  });
+
+  group('WrDriveUploader.deleteFile', () {
+    // ------------------------------------------------------------------
+    // Scenario 9: deleteFile() delegates to api.files.delete() with the
+    // correct file ID.
+    // ------------------------------------------------------------------
+    test('calls api.files.delete() with the given file ID', () async {
+      when(() => mockFiles.delete(any())).thenAnswer((_) async {});
+
+      final uploader = WrDriveUploader.withApi(mockApi);
+      await uploader.deleteFile('target-file-id');
+
+      verify(() => mockFiles.delete('target-file-id')).called(1);
+    });
+  });
 }
