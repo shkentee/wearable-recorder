@@ -151,9 +151,18 @@ class WrDriveUploader {
       q: "'$folderId' in parents and trashed=false",
       spaces: 'drive',
       $fields: 'files(id,name,modifiedTime)',
-      orderBy: 'modifiedTime desc',
     );
-    return result.files ?? [];
+    final files = result.files ?? [];
+    // Sort most-recently-modified first (client-side; list is small).
+    files.sort((a, b) {
+      final at = a.modifiedTime;
+      final bt = b.modifiedTime;
+      if (at == null && bt == null) return 0;
+      if (at == null) return 1;
+      if (bt == null) return -1;
+      return bt.compareTo(at);
+    });
+    return files;
   }
 
   /// Permanently deletes the Drive file identified by [fileId].
