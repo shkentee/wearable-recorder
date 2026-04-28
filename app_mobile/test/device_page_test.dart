@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:wearable_recorder/pages/device_page.dart';
 import 'package:wearable_recorder/pages/drive_files_page.dart';
 import 'package:wearable_recorder/pages/storage_page.dart';
@@ -24,14 +25,19 @@ void main() {
   late StreamController<BluetoothConnectionState> stateCtrl;
   late StreamController<int> packetCtrl;
   late StreamController<int> bytesCtrl;
+  late StreamController<int> lostCtrl;
   late Completer<void> connectCompleter;
   late _MockUploader mockUploader;
 
   setUp(() {
+    // Stub SharedPreferences so DevicePage._connect() (which saves the device
+    // id after a successful connect) never touches the real platform channel.
+    SharedPreferences.setMockInitialValues({});
     device = _MockDevice();
     stateCtrl = StreamController<BluetoothConnectionState>.broadcast();
     packetCtrl = StreamController<int>.broadcast();
     bytesCtrl = StreamController<int>.broadcast();
+    lostCtrl = StreamController<int>.broadcast();
     connectCompleter = Completer<void>();
     mockUploader = _MockUploader();
 
@@ -40,6 +46,7 @@ void main() {
     when(() => device.state).thenAnswer((_) => stateCtrl.stream);
     when(() => device.packetCount).thenAnswer((_) => packetCtrl.stream);
     when(() => device.bytesSaved).thenAnswer((_) => bytesCtrl.stream);
+    when(() => device.lostPackets).thenAnswer((_) => lostCtrl.stream);
     // DevicePage._connect calls device.connect() with no args, so we
     // only need to stub that form. Returning a Completer-controlled
     // future lets individual tests decide when to resolve / fail it.
@@ -56,6 +63,7 @@ void main() {
     await stateCtrl.close();
     await packetCtrl.close();
     await bytesCtrl.close();
+    await lostCtrl.close();
   });
 
   /// Default helper — no uploader override (used by tests that don't navigate

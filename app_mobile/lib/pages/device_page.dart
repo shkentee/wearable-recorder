@@ -3,12 +3,16 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../services/wr_ble_device.dart';
 import '../services/wr_drive_uploader.dart';
 import '../services/wr_foreground_service.dart';
 import 'drive_files_page.dart';
 import 'storage_page.dart';
+
+/// SharedPreferences key used to persist the last-connected device address.
+const _kLastDeviceId = 'wr_last_device_id';
 
 class DevicePage extends StatefulWidget {
   const DevicePage({
@@ -29,6 +33,7 @@ class _DevicePageState extends State<DevicePage> {
   String _status = 'connecting…';
   int _packets = 0;
   int _savedBytes = 0;
+  int _lostPackets = 0;
   bool _uploading = false;
 
   WrDriveUploader get _uploader =>
@@ -57,6 +62,10 @@ class _DevicePageState extends State<DevicePage> {
       if (!mounted) return;
       setState(() => _savedBytes = n);
     });
+    widget.device.lostPackets.listen((n) {
+      if (!mounted) return;
+      setState(() => _lostPackets = n);
+    });
     _connect();
   }
 
@@ -64,6 +73,9 @@ class _DevicePageState extends State<DevicePage> {
     try {
       await widget.device.connect();
       await WrForegroundService.start(widget.device.name);
+      // Persist the device address so ScanPage can auto-reconnect next launch.
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_kLastDeviceId, widget.device.id);
     } catch (e) {
       if (!mounted) return;
       setState(() => _status = 'error: $e');
@@ -171,6 +183,9 @@ class _DevicePageState extends State<DevicePage> {
                 style: Theme.of(context).textTheme.headlineSmall),
             const SizedBox(height: 8),
             Text('Saved bytes: $_savedBytes',
+                style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 8),
+            Text('Lost: $_lostPackets',
                 style: Theme.of(context).textTheme.titleMedium),
             const Spacer(),
             const Text(

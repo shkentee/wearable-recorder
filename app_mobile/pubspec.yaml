@@ -35,6 +35,9 @@ dependencies:
   # Platform.isAndroid in WrForegroundService).
   flutter_foreground_task: ^8.11.0
 
+  # Persist the last-connected BLE device address for auto-reconnect on startup.
+  shared_preferences: ^2.3.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

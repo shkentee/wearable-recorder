@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:wearable_recorder/pages/scan_page.dart';
 import 'package:wearable_recorder/services/wr_ble_scanner.dart';
 
@@ -36,6 +37,9 @@ void main() {
   late StreamController<List<ScanResult>> controller;
 
   setUp(() {
+    // Stub SharedPreferences so _startAutoConnectIfNeeded() resolves with no
+    // saved address and never touches the real platform channel.
+    SharedPreferences.setMockInitialValues({});
     scanner = _MockScanner();
     controller = StreamController<List<ScanResult>>.broadcast();
     when(() => scanner.results).thenAnswer((_) => controller.stream);

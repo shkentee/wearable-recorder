@@ -29,12 +29,20 @@ class WrBleDevice {
 
   final _packetCount = StreamController<int>.broadcast();
   final _bytesSaved = StreamController<int>.broadcast();
+  final _lostPackets = StreamController<int>.broadcast();
   int _count = 0;
+  int _lostCount = 0;
+  int? _lastPacketId; // null until at least one valid packet has arrived
 
   WrPacketSink? _sink;
 
   Stream<int> get packetCount => _packetCount.stream;
   Stream<int> get bytesSaved => _bytesSaved.stream;
+
+  /// Cumulative count of dropped packets inferred from gaps in [packetId].
+  /// A uint16 rollover (0xFFFF → 0x0000) is treated as a gap of 1 (the next
+  /// expected value) and does NOT count as a loss.
+  Stream<int> get lostPackets => _lostPackets.stream;
   Stream<BluetoothConnectionState> get state => _device.connectionState;
 
   String get name {
@@ -111,11 +119,27 @@ class WrBleDevice {
     // notifies in the count stream as a debugging aid. We don't keep
     // the parsed payload around; the sink stores raw bytes for PC-side
     // tooling.
+    final WrAudioPacket packet;
     try {
-      WrAudioPacket.parse(bytes);
+      packet = WrAudioPacket.parse(bytes);
     } on ArgumentError {
       return; // drop malformed packet, don't count it
     }
+
+    // Packet-loss detection: compare against the previous packet id.
+    // The id is a uint16 that wraps from 0xFFFF back to 0x0000.
+    final prev = _lastPacketId;
+    if (prev != null) {
+      final expected = (prev + 1) & 0xFFFF;
+      if (packet.packetId != expected) {
+        // Compute gap, accounting for wrap-around.
+        final gap = (packet.packetId - expected) & 0xFFFF;
+        _lostCount += gap;
+        _lostPackets.add(_lostCount);
+      }
+    }
+    _lastPacketId = packet.packetId;
+
     _count++;
     _packetCount.add(_count);
     final sink = _sink;
@@ -150,5 +174,6 @@ class WrBleDevice {
     await disconnect();
     await _packetCount.close();
     await _bytesSaved.close();
+    await _lostPackets.close();
   }
 }
