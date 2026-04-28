@@ -13,7 +13,7 @@ void _wrForegroundEntryPoint() {
 
 class _WrKeepAliveHandler extends TaskHandler {
   @override
-  Future<void> onStart(DateTime timestamp) async {}
+  Future<void> onStart(DateTime timestamp, TaskStarter starter) async {}
 
   @override
   void onRepeatEvent(DateTime timestamp) {}
@@ -47,7 +47,7 @@ class WrForegroundService {
       iosNotificationOptions: const IOSNotificationOptions(
         showNotification: false,
       ),
-      foregroundTaskOptions: const ForegroundTaskOptions(
+      foregroundTaskOptions: ForegroundTaskOptions(
         eventAction: ForegroundTaskEventAction.nothing(),
         autoRunOnBoot: false,
         allowWakeLock: true,
