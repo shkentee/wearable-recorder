@@ -5,12 +5,19 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:wearable_recorder/pages/device_page.dart';
+import 'package:wearable_recorder/pages/drive_files_page.dart';
+import 'package:wearable_recorder/pages/storage_page.dart';
 import 'package:wearable_recorder/services/wr_ble_device.dart';
+import 'package:wearable_recorder/services/wr_drive_uploader.dart';
 
 /// Mocktail mock of the [WrBleDevice] wrapper. Mocking the wrapper —
 /// rather than [BluetoothDevice] — means the widget test never reaches
 /// the flutter_blue_plus platform channel.
 class _MockDevice extends Mock implements WrBleDevice {}
+
+/// Mocktail mock of [WrDriveUploader] — used to inject into [DevicePage] so
+/// the [DriveFilesPage] path never tries to reach Google Sign-In.
+class _MockUploader extends Mock implements WrDriveUploader {}
 
 void main() {
   late _MockDevice device;
@@ -18,6 +25,7 @@ void main() {
   late StreamController<int> packetCtrl;
   late StreamController<int> bytesCtrl;
   late Completer<void> connectCompleter;
+  late _MockUploader mockUploader;
 
   setUp(() {
     device = _MockDevice();
@@ -25,6 +33,7 @@ void main() {
     packetCtrl = StreamController<int>.broadcast();
     bytesCtrl = StreamController<int>.broadcast();
     connectCompleter = Completer<void>();
+    mockUploader = _MockUploader();
 
     when(() => device.name).thenReturn('Omi DK1');
     when(() => device.id).thenReturn('aa:bb:cc:dd:ee:01');
@@ -36,6 +45,10 @@ void main() {
     // future lets individual tests decide when to resolve / fail it.
     when(() => device.connect()).thenAnswer((_) => connectCompleter.future);
     when(() => device.dispose()).thenAnswer((_) async {});
+    // StoragePage.initState calls openStorageSession(); null = service not found.
+    when(() => device.openStorageSession()).thenAnswer((_) async => null);
+    // DriveFilesPage.initState calls listFiles().
+    when(() => mockUploader.listFiles()).thenAnswer((_) async => []);
   });
 
   tearDown(() async {
@@ -45,8 +58,18 @@ void main() {
     await bytesCtrl.close();
   });
 
+  /// Default helper — no uploader override (used by tests that don't navigate
+  /// to DriveFilesPage).
   Widget hostedDevicePage() {
     return MaterialApp(home: DevicePage(device: device));
+  }
+
+  /// Helper with injected [_MockUploader] for navigation tests that reach
+  /// [DriveFilesPage].
+  Widget hostedDevicePageWithUploader() {
+    return MaterialApp(
+      home: DevicePage(device: device, uploader: mockUploader),
+    );
   }
 
   testWidgets('shows "connecting…" while the connect future is pending',
@@ -117,5 +140,57 @@ void main() {
 
     expect(find.textContaining('error:'), findsOneWidget);
     expect(find.textContaining('boom'), findsOneWidget);
+  });
+
+  // ---------------------------------------------------------------------------
+  // New tests
+  // ---------------------------------------------------------------------------
+
+  testWidgets('connect() is called once when the page initialises',
+      (tester) async {
+    await tester.pumpWidget(hostedDevicePage());
+
+    // Resolve the pending connect future so the page settles cleanly.
+    connectCompleter.complete();
+    await tester.pumpAndSettle();
+
+    // device.connect() must have been called exactly once by _connect().
+    verify(() => device.connect()).called(1);
+  });
+
+  testWidgets(
+      'sd_storage_outlined button navigates to StoragePage',
+      (tester) async {
+    await tester.pumpWidget(hostedDevicePage());
+
+    // Let connect settle so the page is fully ready.
+    connectCompleter.complete();
+    await tester.pumpAndSettle();
+
+    // Tap the SD-card icon in the AppBar.
+    await tester.tap(find.byIcon(Icons.sd_storage_outlined));
+    await tester.pumpAndSettle();
+
+    // StoragePage should now be visible.
+    expect(find.byType(StoragePage), findsOneWidget);
+  });
+
+  testWidgets(
+      'cloud_queue button navigates to DriveFilesPage',
+      (tester) async {
+    // Use the helper that injects the mock uploader so DriveFilesPage never
+    // tries to reach real Google Sign-In / Drive APIs.
+    await tester.pumpWidget(hostedDevicePageWithUploader());
+
+    // Let connect settle so the page is fully ready.
+    connectCompleter.complete();
+    await tester.pumpAndSettle();
+
+    // Tap the cloud-queue icon in the AppBar.
+    await tester.tap(find.byIcon(Icons.cloud_queue));
+    await tester.pumpAndSettle();
+
+    // DriveFilesPage should now be visible.
+    expect(find.byType(DriveFilesPage), findsOneWidget);
   });
 }
