@@ -1,8 +1,13 @@
 import 'package:flutter/material.dart';
 
 import 'pages/scan_page.dart';
+import 'services/wr_foreground_service.dart';
 
-void main() => runApp(const WrApp());
+void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  WrForegroundService.init();
+  runApp(const WrApp());
+}
 
 class WrApp extends StatelessWidget {
   const WrApp({super.key});

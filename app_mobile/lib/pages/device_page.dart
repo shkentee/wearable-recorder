@@ -6,6 +6,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../services/wr_ble_device.dart';
 import '../services/wr_drive_uploader.dart';
+import '../services/wr_foreground_service.dart';
 import 'drive_files_page.dart';
 import 'storage_page.dart';
 
@@ -39,10 +40,18 @@ class _DevicePageState extends State<DevicePage> {
     widget.device.state.listen((s) {
       if (!mounted) return;
       setState(() => _status = s.name);
+      if (s == BluetoothConnectionState.disconnected) {
+        WrForegroundService.stop().ignore();
+      }
     });
     widget.device.packetCount.listen((n) {
       if (!mounted) return;
       setState(() => _packets = n);
+      if (n % 100 == 0 && n > 0) {
+        WrForegroundService.update(
+          '${widget.device.name} · $n packets',
+        ).ignore();
+      }
     });
     widget.device.bytesSaved.listen((n) {
       if (!mounted) return;
@@ -54,6 +63,7 @@ class _DevicePageState extends State<DevicePage> {
   Future<void> _connect() async {
     try {
       await widget.device.connect();
+      await WrForegroundService.start(widget.device.name);
     } catch (e) {
       if (!mounted) return;
       setState(() => _status = 'error: $e');
@@ -112,6 +122,7 @@ class _DevicePageState extends State<DevicePage> {
 
   @override
   void dispose() {
+    WrForegroundService.stop().ignore();
     widget.device.dispose();
     super.dispose();
   }

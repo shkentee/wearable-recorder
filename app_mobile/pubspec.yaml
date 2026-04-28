@@ -30,6 +30,11 @@ dependencies:
   googleapis: ^12.0.0
   http: ^1.2.2
 
+  # Android Foreground Service — keeps the BLE connection alive when the app
+  # is in the background. No-op on non-Android platforms (guarded by
+  # Platform.isAndroid in WrForegroundService).
+  flutter_foreground_task: ^8.11.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

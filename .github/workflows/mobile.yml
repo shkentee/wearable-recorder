@@ -106,10 +106,11 @@ jobs:
           echo '--- patched android/settings.gradle ---'
           cat "$SETTINGS"
 
-      - name: Inject BLE permissions into AndroidManifest.xml
-        # `flutter create` ships a manifest without BLE / location permissions.
-        # We inject the three permissions our flutter_blue_plus + Android 12+
-        # runtime-prompt flow needs, right before the opening <application> tag.
+      - name: Inject BLE + Foreground Service entries into AndroidManifest.xml
+        # `flutter create` ships a manifest without BLE, location, or foreground
+        # service declarations. Inject:
+        #   1. Five <uses-permission> elements before <application>
+        #   2. FlutterForegroundTask <service> element inside <application>
         run: |
           MANIFEST=android/app/src/main/AndroidManifest.xml
           test -f "$MANIFEST" || { echo "Manifest not found: $MANIFEST"; exit 1; }
@@ -117,10 +118,14 @@ jobs:
           import sys, re, pathlib
           path = pathlib.Path(sys.argv[1])
           src = path.read_text(encoding='utf-8')
+
+          # --- permissions (injected before <application>) ---
           perms = [
               '<uses-permission android:name="android.permission.BLUETOOTH_SCAN" />',
               '<uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />',
               '<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />',
+              '<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />',
+              '<uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />',
           ]
           # Drop any duplicates that might already exist (defensive).
           for p in perms:
@@ -131,8 +136,25 @@ jobs:
           if n != 1:
               print('ERROR: <application> tag not found in manifest', file=sys.stderr)
               sys.exit(1)
-          path.write_text(new_src, encoding='utf-8')
-          print('Injected', len(perms), 'permissions into', path)
+          src = new_src
+
+          # --- FlutterForegroundTask service (injected inside <application>) ---
+          svc = (
+              '        <service\n'
+              '            android:name="com.pravera.flutter_foreground_task.service.ForegroundService"\n'
+              '            android:foregroundServiceType="connectedDevice"\n'
+              '            android:exported="false" />'
+          )
+          # Drop duplicates.
+          src = src.replace(svc + '\n', '').replace(svc, '')
+          new_src, m = re.subn(r'(\s*)</application>', svc + r'\n\1</application>', src, count=1)
+          if m != 1:
+              print('ERROR: </application> tag not found in manifest', file=sys.stderr)
+              sys.exit(1)
+          src = new_src
+
+          path.write_text(src, encoding='utf-8')
+          print('Injected', len(perms), 'permissions + FlutterForegroundTask service into', path)
           PY
           echo '--- AndroidManifest.xml after injection ---'
           cat "$MANIFEST"
