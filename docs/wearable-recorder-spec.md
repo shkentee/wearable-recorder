@@ -23,7 +23,7 @@
 | D2 | ボタン: D4(P0.04, OUT) + D5(P0.05, IN) | ✅ |
 | D3 | LED: ハートビート式 + 警告優先 | ✅ Phase 4-5 + 4-5+（純化 + 13 ztest。バッテリーADCフックは Phase 5）|
 | D4 | SD: Plan B（常時書き込み） | ✅ Phase 4-1（pusher() ファンアウト patch 適用済。実機ジッター測定は Phase 5）|
-| D5 | バッテリー: 200mAh一本 | 🟡 Phase 6（`wr_battery.c` SAADC 純粋計算 + 15 ztest 完了 §22.16。Zephyr SAADC glue `wr_led_status.c` 実装完了 §22.19。DT overlay + Phase 5 実機ゲイン検証は Phase 5 後）|
+| D5 | バッテリー: 250mAh一本 | 🟡 Phase 6（`wr_battery.c` SAADC 純粋計算 + 15 ztest 完了 §22.16。Zephyr SAADC glue `wr_led_status.c` 実装完了 §22.19。DT overlay + Phase 5 実機ゲイン検証は Phase 5 後）|
 | D6 | チャンク: 10分/file | ✅ Phase 4-2 + 4-6+（純化 + ztest。サイズ閾値は wr_chunk_logic 実装済、Phase 6 で配線）|
 | D7 | ファイル名: `<UNIX_epoch>.opus` / 未同期時 `unsynced_<bootid>_<seq>.opus` | ✅ Phase 4-6+ + Phase 6（純化ロジック + ztest + 3-kind 判別 / 削除順 OK。`wr_time_sync` GATT char + `wr_chunk_set_sync_time()` runtime 配線完了 §22.15）|
 | D8 | FIFO: 空き10%以下で最古から削除 | ✅ Phase 4-3 + 4-6+ + Phase 6（純化 + ztest + LEGACY/UNSYNCED/EPOCH classify + 削除優先度総順序、計 18 ztest 追加）|
@@ -51,7 +51,7 @@
 ### 1.2 性能目標
 
 - **150 mAh バッテリーで 20時間連続稼働を達成**(若干ショートしても可)
-- 実装時は 200 mAh バッテリーで余裕を見込む
+- 実装時は 250 mAh バッテリーで余裕を見込む
 - 1日15時間稼働 + 充電1日 = 隔日運用可能
 
 ### 1.3 開発環境
@@ -71,7 +71,7 @@
 | MCU | Seeed Studio XIAO nRF52840 Sense | Seeed Studio直販 / Amazon | 内蔵PDMマイク MP34DT05、内蔵 P25Q16H 2MB QSPI flash |
 | microSDブレイクアウト | 18×18mm 青基板 (WP-045系) | けんたさん既所有 | 10kΩプルアップ×4 + デカップリングコンデンサ。シンプル構成 |
 | microSDカード | SanDisk Ultra 16GB or 32GB | Amazon B074B4P7KD (¥749, 並行輸入) | 待機電流 約250µA(Neurotech Hub 2025実測) |
-| バッテリー | LiPo 150mAh(検証時) → 200mAh(本番想定) | - | 502030 250mAh も検討可(DK2と同じ型番) |
+| バッテリー | LiPo 150mAh(検証時) → 250mAh(本番採用) | - | 502030 250mAh (DK2と同じ型番、確定) |
 | スイッチ | タクトスイッチ 4×4×1.5mm SMD | Amazon | DK2と同じ型番。電源ON/OFFと録音制御を兼用 |
 | 充電 | XIAO Senseの USB-C(標準実装) | - | 充電中もUSB-C経由で SD読み出し可 |
 
@@ -514,7 +514,7 @@ PDMバッファfill
 | 持続時間 | 4日 (≒96h) | 2日 (≒48h) |
 | 平均電流 | 2.6 mA | 5.2 mA |
 
-### 14.2 けんた案の予測（D5 確定: 200mAh 一本）
+### 14.2 けんた案の予測（D5 確定: 250mAh 一本）
 
 実測 SD アイドル電流 **260µA** ベースで再算出:
 
@@ -528,13 +528,13 @@ PDMバッファfill
 | 容量 | 連続稼働 | 15h/日運用 |
 |---|---|---|
 | 150mAh | 41〜47h | 隔日OK（40%余裕）|
-| **200mAh（採用）** | **54〜63h** | **3日連続OK（80%余裕）** |
-| 250mAh | 68〜78h | 4日連続OK |
+| 200mAh | 54〜63h | 3日連続OK |
+| **250mAh（採用）** | **67〜78h** | **4日連続OK（230%余裕）** |
 
 ### 14.3 20時間目標の達成性
 
-- **200mAh で 50h以上** → 20h目標に対して **150%以上の余裕**
-- 150mAh でも達成可能（41〜47h）だったが、Plan B採用＋実機誤差を考慮して 200mAh に拡張（D5確定）
+- **250mAh で 67h以上** → 20h目標に対して **230%以上の余裕**
+- 150mAh でも達成可能（41〜47h）だったが、Plan B採用＋実機誤差を考慮して 250mAh に拡張（D5確定）
 
 > **注記**: §14.2 の電流値は理論計算ベース。実測差分は Phase 5（PPK2 計測）で本仕様書をアップデート予定。
 
@@ -655,7 +655,7 @@ adafruit-nrfutil dfu genpkg \
 1. PPK2 または Joulescope で実測
 2. 150 mAh で 20時間動くか検証
 3. 必要に応じて BLE接続パラメータ調整、システム sleep最適化
-4. バッテリー容量を 200 mAh に増やすか判断
+4. バッテリー容量を 250 mAh に増やすか判断
 
 ### フェーズ4: スマホアプリ(後回し)
 
@@ -926,11 +926,11 @@ Phase 6 後半（Whisper パイプライン）+ Phase 5 実機電力検算に向
 
 **成果物 2: `tools/power-predict.py`**
 
-§14.2 の電力見積もり（3.2-3.7 mA → 200 mAh で 54-63 h）を **CLI で再現 + what-if 検証** できる pre-Phase-5 リファレンスモデル。PPK2 到着前に「バッテリー違い / 録音 duty 違い / BLE オーバーヘッド違い」の効きを試せる。
+§14.2 の電力見積もり（3.2-3.7 mA → 250 mAh で 67-78 h）を **CLI で再現 + what-if 検証** できる pre-Phase-5 リファレンスモデル。PPK2 到着前に「バッテリー違い / 録音 duty 違い / BLE オーバーヘッド違い」の効きを試せる。
 
 - pure-stdlib（`argparse` / `json` / `dataclasses` / `math`、PyYAML 不要）
 - モデル: `avg = (pdm+codec+ble)*record_duty + sd*sd_duty + led + mcu_idle*(1-record_duty)`
-- デフォルト出力: **3.71 mA / 53.9 h / 2.25 days**（§14.2 と一致）
+- デフォルト出力: **3.71 mA / 67.4 h / 2.81 days**（§14.2 と一致）
 - `--fail-under-target` で CI ガード化可能（デフォルト OFF）、`--target-hours` で §14.3 の 20h ベースラインを上書き
 - `tools/test_power_predict.py`: **10 pytest**（spec デフォルト一致 / 線形バッテリースケール / record-duty 半減でほぼ倍寿命（1.89×解析） / `sd_write_duty=1.0` での寿命崩壊 / 全 0 ガード / 充電オフセット → 無限寿命センチネル / `--fail-under-target` の exit code）
 
@@ -1132,7 +1132,7 @@ D7（`<UNIX_epoch>.opus` / `unsynced_<bootid8hex>_<seq5>.opus`）の純粋ロジ
 
 ### 22.16 Phase 6: D5 バッテリー ADC — 純粋計算層
 
-D5（バッテリー 200 mAh 一本、SAADC 測定）の純粋計算部分（Zephyr 非依存）を実装した。
+D5（バッテリー 250 mAh 一本、SAADC 測定）の純粋計算部分（Zephyr 非依存）を実装した。
 
 **成果物**
 - `app/include/wr_battery.h`:

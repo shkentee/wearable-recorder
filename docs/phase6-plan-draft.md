@@ -108,7 +108,7 @@ if (wr_msc_mode_is_active()) {
 
 - [ ] Phase 5 の電力実測値を §14.2 にフィードバック済か
 - [ ] PPK2 / Joulescope のキャプチャを `tests/firmware/data/power-baseline/` 等に保存済か
-- [ ] 200mAh バッテリーで 20h 目標達成済か（未達なら Opus ビットレート / sleep 戦略を再考）
+- [ ] 250mAh バッテリーで 20h 目標達成済か（未達なら Opus ビットレート / sleep 戦略を再考）
 - [ ] omi 公式アプリ `third_party/omi/app/` の Flutter プロジェクト構造を確認済か
 - [ ] 実機（XIAO Sense + SD ブレイクアウト）の Plan B 動作（同時 SD + BLE 受信）を Wireshark で確認済か
 

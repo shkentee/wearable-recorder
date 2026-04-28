@@ -4,7 +4,7 @@
 Phase 5 will produce real PPK2 measurements, but until the hardware is
 in hand we want a deterministic, parameterised model so we can:
 
-* sanity-check spec section 14.2 ("3.2-3.7mA / 200mAh -> 54-63h"),
+* sanity-check spec section 14.2 ("3.2-3.7mA / 250mAh -> 67-78h"),
 * explore "what if BLE costs +0.5mA more than expected?" without
   re-deriving the algebra each time, and
 * freeze a single set of assumptions in CI so future tweaks have to
@@ -34,7 +34,7 @@ spec already folds into ``sd_active_ma`` via a duty-blended figure;
 keeping them as a single duty knob keeps the CLI compact).
 
 The defaults reproduce the spec section 14.2 estimate of ~3.5mA on a
-200mAh cell (~57h continuous), which is comfortably above the 20h
+250mAh cell (~71h continuous), which is comfortably above the 20h
 project target. ``--target-hours`` overrides the comparison threshold.
 
 This is pure stdlib (argparse, json, dataclasses, math) -- no PyYAML,
@@ -65,7 +65,7 @@ ZERO_DRAW_EPS = 1e-12
 class PowerInputs:
     """All knobs the model accepts. mA unless noted."""
 
-    battery_mah: float = 200.0
+    battery_mah: float = 250.0
     pdm_active_ma: float = 1.5
     codec_active_ma: float = 0.8
     ble_tx_avg_ma: float = 1.2

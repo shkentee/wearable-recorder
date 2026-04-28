@@ -136,7 +136,7 @@ The same test runs on every PR that touches `tools/**` via
 Predicts average current draw and battery life from per-subsystem mA /
 duty assumptions. Pre-Phase 5 (no PPK2 hardware yet) this is the
 reference for whether the spec section 14.2 estimate of
-**3.2-3.7mA / 200mAh -> 54-63h** still holds as we iterate on firmware.
+**3.2-3.7mA / 250mAh -> 67-78h** still holds as we iterate on firmware.
 
 Pure stdlib (`argparse`, `json`, `dataclasses`, `math`) — no third-party
 deps, runs in the same minimal CI image as `decode-dump.py`.
@@ -158,7 +158,7 @@ three sleep together). SD writes have their own `sd_write_duty` knob.
 ### Usage
 
 ```bash
-# Spec defaults (200mAh, always-on record, 5% SD duty)
+# Spec defaults (250mAh, always-on record, 5% SD duty)
 python tools/power-predict.py
 
 # What-if: 150mAh cell, 80% record duty, +0.5mA BLE overhead
@@ -176,7 +176,7 @@ python tools/power-predict.py --fail-under-target --target-hours 20
 
 | knob | default | source |
 |------|---------|--------|
-| `battery-mah`     | 200    | spec D5 (採用) |
+| `battery-mah`     | 250    | spec D5 (採用) |
 | `pdm-active-ma`   | 1.5    | DK1 baseline split |
 | `codec-active-ma` | 0.8    | DK1 baseline split |
 | `ble-tx-avg-ma`   | 1.2    | DK1 baseline split |

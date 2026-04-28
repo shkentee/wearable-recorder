@@ -57,7 +57,7 @@ def _defaults():
 
 def test_defaults_match_spec_section_14_2():
     """Defaults should land in spec section 14.2's 3.2-3.7mA window
-    and beat the 20h project goal with ~150% margin.
+    and beat the 20h project goal with ~230% margin.
 
     Hand calculation:
         record = (1.5 + 0.8 + 1.2) * 1.0 = 3.5
@@ -65,7 +65,7 @@ def test_defaults_match_spec_section_14_2():
         led    = 0.01
         mcu    = 0.005 * (1 - 1.0)     = 0.0
         avg    = 3.71 mA
-        hours  = 200 / 3.71 ~= 53.9 h
+        hours  = 250 / 3.71 ~= 67.4 h
     """
     pred = pp.predict_power(_defaults())
     # avg current is the load-bearing claim of section 14.2.
@@ -83,7 +83,7 @@ def test_defaults_match_spec_section_14_2():
     assert sum(pred.contributions_pct.values()) == pytest.approx(100.0)
 
 
-def test_defaults_cli_output_is_around_57_hours():
+def test_defaults_cli_output_is_around_67_hours():
     """End-to-end CLI smoke test on defaults via ``main([])``.
 
     Asserts on the JSON form so we don't tie the test to the exact
@@ -95,7 +95,7 @@ def test_defaults_cli_output_is_around_57_hours():
     assert rc == 0
     payload = json.loads(buf.getvalue())
     hours = payload["prediction"]["hours"]
-    assert hours == pytest.approx(53.9, abs=2.0)
+    assert hours == pytest.approx(67.4, abs=2.0)
     assert payload["prediction"]["meets_target"] is True
 
 
@@ -137,13 +137,13 @@ def test_sd_write_duty_one_crashes_runtime():
     therefore tanks runtime. Confirms ``sd_write_duty`` is wired in.
 
     avg(sd_duty=1.0) = 3.5 + 4.0 + 0.01 = 7.51 mA
-    hours            = 200 / 7.51       ~= 26.6 h
+    hours            = 250 / 7.51       ~= 33.3 h
     """
     inp = _defaults()
     inp.sd_write_duty = 1.0
     pred = pp.predict_power(inp)
     assert pred.avg_ma == pytest.approx(7.51, abs=0.01)
-    assert pred.hours == pytest.approx(26.6, abs=1.0)
+    assert pred.hours == pytest.approx(33.3, abs=1.0)
     # Still beats the 20h target (barely) so meets_target stays True;
     # the load-side change is the real assertion.
     assert pred.hours < pp.predict_power(_defaults()).hours
