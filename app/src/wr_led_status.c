@@ -52,6 +52,9 @@ void wr_led_status_set_sd_full(bool on)     { wr_led_sd_full = on; }
 void wr_led_status_set_sd_missing(bool on)  { wr_led_sd_missing = on; }
 void wr_led_status_set_batt_pct(uint8_t p)  { wr_led_batt_pct = p; }
 
+/* Getter used by wr_battery_service.c to read the last ADC-sampled percent. */
+uint8_t wr_led_status_get_batt_pct(void) { return wr_led_batt_pct; }
+
 /* ---------------------------------------------------------------------------
  * Battery ADC glue — compiled in only when the nRFx SAADC driver is enabled.
  * batt_adc_worker is submitted from the timer ISR to the system workqueue
