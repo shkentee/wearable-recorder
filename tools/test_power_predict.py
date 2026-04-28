@@ -103,7 +103,7 @@ def test_half_battery_halves_runtime():
     """Linear scaling sanity: capacity is the only thing that changes."""
     base = pp.predict_power(_defaults())
     inp = _defaults()
-    inp.battery_mah = 100.0
+    inp.battery_mah = _defaults().battery_mah / 2.0
     half = pp.predict_power(inp)
     assert half.hours == pytest.approx(base.hours / 2.0, rel=1e-9)
 
