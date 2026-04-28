@@ -16,7 +16,9 @@ import 'package:wearable_recorder/services/wr_audio_packet.dart';
 class _PacketLossTracker {
   int? _lastPacketId;
   int _lostCount = 0;
-  final _controller = StreamController<int>.broadcast();
+  // sync: true so add() delivers events immediately — avoids event-loop
+  // timing issues in tests that collect emissions before cancelling.
+  final _controller = StreamController<int>.broadcast(sync: true);
 
   Stream<int> get stream => _controller.stream;
   int get lostCount => _lostCount;
@@ -118,10 +120,6 @@ void main() {
       tracker.feed(_pkt(3)); // no gap → no emit
       tracker.feed(_pkt(6)); // gap 2 → emits 3
 
-      // StreamController.broadcast() delivers events asynchronously through
-      // the event loop. Yield to the microtask queue so all pending events
-      // are dispatched before we cancel the subscription.
-      await Future.microtask(() {});
       await sub.cancel();
       expect(emitted, [1, 3]);
     });
