@@ -118,6 +118,10 @@ void main() {
       tracker.feed(_pkt(3)); // no gap → no emit
       tracker.feed(_pkt(6)); // gap 2 → emits 3
 
+      // StreamController.broadcast() delivers events asynchronously through
+      // the event loop. Yield to the microtask queue so all pending events
+      // are dispatched before we cancel the subscription.
+      await Future.microtask(() {});
       await sub.cancel();
       expect(emitted, [1, 3]);
     });
