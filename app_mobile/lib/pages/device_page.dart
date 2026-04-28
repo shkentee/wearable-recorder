@@ -7,6 +7,7 @@ import 'package:path_provider/path_provider.dart';
 import '../services/wr_ble_device.dart';
 import '../services/wr_drive_uploader.dart';
 import 'drive_files_page.dart';
+import 'storage_page.dart';
 
 class DevicePage extends StatefulWidget {
   const DevicePage({
@@ -121,6 +122,19 @@ class _DevicePageState extends State<DevicePage> {
       appBar: AppBar(
         title: Text(widget.device.name),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.sd_storage_outlined),
+            tooltip: 'Device SD files',
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => StoragePage(
+                  device: widget.device,
+                  uploader: _uploader,
+                ),
+              ),
+            ),
+          ),
           IconButton(
             icon: const Icon(Icons.cloud_queue),
             tooltip: 'Drive recordings',

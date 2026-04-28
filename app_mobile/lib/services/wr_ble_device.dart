@@ -6,6 +6,7 @@ import 'package:path_provider/path_provider.dart';
 
 import 'wr_audio_packet.dart';
 import 'wr_packet_sink.dart';
+import 'wr_storage_client.dart';
 import 'wr_uuids.dart';
 
 /// Single-connection GATT session against a wearable-recorder device.
@@ -23,6 +24,8 @@ class WrBleDevice {
 
   StreamSubscription<List<int>>? _notifySub;
   StreamSubscription<BluetoothConnectionState>? _stateSub;
+
+  List<BluetoothService>? _discoveredServices;
 
   final _packetCount = StreamController<int>.broadcast();
   final _bytesSaved = StreamController<int>.broadcast();
@@ -44,6 +47,7 @@ class WrBleDevice {
   Future<void> connect({Duration timeout = const Duration(seconds: 15)}) async {
     await _device.connect(timeout: timeout, autoConnect: false);
     final services = await _device.discoverServices();
+    _discoveredServices = services;
     final audio = services.firstWhere(
       (s) => s.serviceUuid == Guid(WrUuids.audioService),
       orElse: () =>
@@ -118,6 +122,16 @@ class WrBleDevice {
     if (sink != null) {
       sink.add(bytes).then((_) => _bytesSaved.add(sink.bytesWritten));
     }
+  }
+
+  /// Opens a [WrStorageSession] against the device's storage GATT service.
+  ///
+  /// Returns null if the firmware does not expose the storage service (e.g.
+  /// plain omi builds). Must be called after [connect].
+  Future<WrStorageSession?> openStorageSession() async {
+    final svcs = _discoveredServices;
+    if (svcs == null) return null;
+    return WrStorageSession.fromServices(svcs);
   }
 
   Future<void> disconnect() async {
