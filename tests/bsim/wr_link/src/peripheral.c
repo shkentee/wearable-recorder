@@ -24,10 +24,16 @@
 DEFINE_FLAG(flag_peer_connected);
 DEFINE_FLAG(flag_notify_sent);
 DEFINE_FLAG(flag_time_sync_received);
+DEFINE_FLAG(flag_storage_list_handled);
+DEFINE_FLAG(flag_storage_fetch_handled);
 
 static struct bt_conn *peer_conn;
 static struct k_work_delayable notify_work;
 static uint16_t notify_seq;
+
+/* Storage GATT: command received from central, queued to work queue. */
+static uint8_t  storage_cmd;
+static struct k_work storage_resp_work;
 
 static const struct bt_data ad[] = {
 	BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
@@ -54,6 +60,110 @@ BT_GATT_SERVICE_DEFINE(audio_svc,
 	BT_GATT_CCC(ccc_cfg_changed,
 		    BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
 );
+
+/* ---------------------------------------------------------------
+ * Storage GATT service — bsim test stub.
+ *
+ * Mirrors the protocol in app/src/wr_storage_service.c:
+ *   LIST (0x00) → FILE_ENTRY × 2 + END
+ *   FETCH (0x01 + name) → DATA × 1 + END
+ * Responses are sent from a work queue handler (not from the write
+ * callback) to keep the BLE RX thread unblocked.
+ * --------------------------------------------------------------- */
+
+static ssize_t storage_ctrl_write_cb(struct bt_conn *conn,
+				     const struct bt_gatt_attr *attr,
+				     const void *buf, uint16_t len,
+				     uint16_t offset, uint8_t flags)
+{
+	ARG_UNUSED(attr);
+	ARG_UNUSED(offset);
+	ARG_UNUSED(flags);
+
+	if (len == 0) {
+		return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+	}
+
+	storage_cmd = ((const uint8_t *)buf)[0];
+	k_work_submit(&storage_resp_work);
+	return (ssize_t)len;
+}
+
+static void storage_stream_ccc_changed(const struct bt_gatt_attr *attr,
+				       uint16_t value)
+{
+	bs_trace_info_time(1, "peripheral: storage stream CCC -> 0x%04x\n", value);
+}
+
+BT_GATT_SERVICE_DEFINE(storage_svc,
+	BT_GATT_PRIMARY_SERVICE(BT_UUID_WR_STORAGE_SVC),
+	BT_GATT_CHARACTERISTIC(BT_UUID_WR_STORAGE_STREAM,
+			       BT_GATT_CHRC_NOTIFY,
+			       BT_GATT_PERM_NONE,
+			       NULL, NULL, NULL),
+	BT_GATT_CCC(storage_stream_ccc_changed,
+		    BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+	BT_GATT_CHARACTERISTIC(BT_UUID_WR_STORAGE_CTRL,
+			       BT_GATT_CHRC_WRITE_WITHOUT_RESP,
+			       BT_GATT_PERM_WRITE,
+			       NULL, storage_ctrl_write_cb, NULL),
+);
+/* storage_svc.attrs[2] = storageStream value (used with bt_gatt_notify). */
+
+static void storage_resp_worker(struct k_work *work)
+{
+	ARG_UNUSED(work);
+
+	struct bt_conn *conn = peer_conn;
+
+	if (!conn) {
+		return;
+	}
+
+	if (storage_cmd == 0x00) {
+		/* LIST: send FILE_ENTRY for each test file, then END. */
+		const char *files[] = {
+			WR_STORAGE_TEST_FILE_1,
+			WR_STORAGE_TEST_FILE_2,
+		};
+		for (int i = 0; i < 2; i++) {
+			uint8_t buf[1 + 64];
+			size_t nlen = strlen(files[i]);
+			buf[0] = 0x01; /* FILE_ENTRY */
+			memcpy(&buf[1], files[i], nlen);
+			int err = bt_gatt_notify(conn, &storage_svc.attrs[2],
+						 buf, (uint16_t)(1 + nlen));
+			if (err) {
+				FAIL("peripheral: storage LIST notify failed (%d)\n",
+				     err);
+				return;
+			}
+			k_msleep(10);
+		}
+		uint8_t end = 0x03;
+		bt_gatt_notify(conn, &storage_svc.attrs[2], &end, 1);
+		bs_trace_info_time(1, "peripheral: storage LIST sent (2 entries + END)\n");
+		SET_FLAG(flag_storage_list_handled);
+
+	} else if (storage_cmd == 0x01) {
+		/* FETCH: send DATA chunk, then END. */
+		uint8_t data[] = WR_STORAGE_TEST_DATA;
+		uint8_t buf[1 + WR_STORAGE_TEST_DATA_LEN];
+		buf[0] = 0x02; /* DATA */
+		memcpy(&buf[1], data, WR_STORAGE_TEST_DATA_LEN);
+		int err = bt_gatt_notify(conn, &storage_svc.attrs[2],
+					 buf, (uint16_t)sizeof(buf));
+		if (err) {
+			FAIL("peripheral: storage FETCH notify failed (%d)\n", err);
+			return;
+		}
+		k_msleep(10);
+		uint8_t end = 0x03;
+		bt_gatt_notify(conn, &storage_svc.attrs[2], &end, 1);
+		bs_trace_info_time(1, "peripheral: storage FETCH sent (data + END)\n");
+		SET_FLAG(flag_storage_fetch_handled);
+	}
+}
 
 /* D7 time-sync service: single WRITE_WITHOUT_RESP characteristic.
  * Mirrors app/src/wr_time_sync.c — service UUID doubles as char UUID. */
@@ -176,6 +286,7 @@ void wr_run_peripheral(void)
 	}
 	bt_conn_cb_register(&peripheral_cb);
 	k_work_init_delayable(&notify_work, notify_worker);
+	k_work_init(&storage_resp_work, storage_resp_worker);
 
 	err = bt_le_adv_start(BT_LE_ADV_CONN, ad, ARRAY_SIZE(ad), NULL, 0);
 	if (err) {
@@ -187,5 +298,7 @@ void wr_run_peripheral(void)
 	WAIT_FOR_FLAG(flag_peer_connected);
 	WAIT_FOR_FLAG(flag_notify_sent);
 	WAIT_FOR_FLAG(flag_time_sync_received);
-	PASS("peripheral: link + notify burst + time-sync received\n");
+	WAIT_FOR_FLAG(flag_storage_list_handled);
+	WAIT_FOR_FLAG(flag_storage_fetch_handled);
+	PASS("peripheral: link + notify burst + time-sync + storage LIST + FETCH handled\n");
 }

@@ -77,6 +77,25 @@ extern enum bst_result_t bst_result;
  * LE64 bytes: {0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01}. */
 #define WR_LINK_TIME_SYNC_EPOCH 0x0102030405060708ULL
 
+/* Storage GATT service UUIDs (mirrors wr_storage_service.c). */
+#define BT_UUID_WR_STORAGE_SVC_VAL \
+	BT_UUID_128_ENCODE(0x30295780, 0x4301, 0xEABD, 0x2904, 0x2849ADFEAE43)
+#define BT_UUID_WR_STORAGE_STREAM_VAL \
+	BT_UUID_128_ENCODE(0x30295781, 0x4301, 0xEABD, 0x2904, 0x2849ADFEAE43)
+#define BT_UUID_WR_STORAGE_CTRL_VAL \
+	BT_UUID_128_ENCODE(0x30295782, 0x4301, 0xEABD, 0x2904, 0x2849ADFEAE43)
+#define BT_UUID_WR_STORAGE_SVC    BT_UUID_DECLARE_128(BT_UUID_WR_STORAGE_SVC_VAL)
+#define BT_UUID_WR_STORAGE_STREAM BT_UUID_DECLARE_128(BT_UUID_WR_STORAGE_STREAM_VAL)
+#define BT_UUID_WR_STORAGE_CTRL   BT_UUID_DECLARE_128(BT_UUID_WR_STORAGE_CTRL_VAL)
+
+/* Synthetic file list the peripheral returns for the bsim LIST scenario. */
+#define WR_STORAGE_TEST_FILE_1     "1700000000.opus"
+#define WR_STORAGE_TEST_FILE_2     "unsynced_ab12_00000.opus"
+
+/* Synthetic file data the peripheral returns for the bsim FETCH scenario. */
+#define WR_STORAGE_TEST_DATA       { 0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02 }
+#define WR_STORAGE_TEST_DATA_LEN   6
+
 void wr_test_init(void);
 void wr_test_tick(bs_time_t HW_device_time);
 

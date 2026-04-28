@@ -21,12 +21,17 @@ DEFINE_FLAG(flag_central_connected);
 DEFINE_FLAG(flag_audio_subscribed);
 DEFINE_FLAG(flag_notify_received);
 DEFINE_FLAG(flag_time_sync_written);
+DEFINE_FLAG(flag_storage_subscribed);
+DEFINE_FLAG(flag_storage_list_done);
+DEFINE_FLAG(flag_storage_fetch_done);
 
 static struct bt_conn *default_conn;
 static uint32_t notify_received_count;
 
 static struct bt_gatt_discover_params discover_params;
 static struct bt_gatt_subscribe_params sub_params;
+static struct bt_gatt_subscribe_params storage_sub_params;
+static uint16_t storage_ctrl_handle;
 
 /* Expected trailing bytes after the LE16 seq id: frame=0x00 + dummy 'ABCD'. */
 static const uint8_t expected_tail[] = { 0x00, 'A', 'B', 'C', 'D' };
@@ -80,6 +85,40 @@ static uint8_t notify_cb(struct bt_conn *conn,
 	return BT_GATT_ITER_CONTINUE;
 }
 
+/* Storage stream notify handler.
+ * Sets flag_storage_list_done on the first END (0x03), then
+ * flag_storage_fetch_done on the second — protocol guarantees ordering. */
+static uint8_t storage_notify_cb(struct bt_conn *conn,
+				  struct bt_gatt_subscribe_params *params,
+				  const void *data, uint16_t length)
+{
+	ARG_UNUSED(conn);
+	ARG_UNUSED(params);
+
+	if (data == NULL) {
+		bs_trace_info_time(1, "central: storage subscription tore down\n");
+		return BT_GATT_ITER_STOP;
+	}
+	if (length < 1) {
+		return BT_GATT_ITER_CONTINUE;
+	}
+
+	const uint8_t *p = data;
+	bs_trace_info_time(1, "central: storage notify type=0x%02x len=%u\n",
+			   p[0], (unsigned)length);
+
+	if (p[0] == 0x03) { /* END */
+		if (!(bool)atomic_get(&flag_storage_list_done)) {
+			bs_trace_info_time(1, "central: storage LIST complete\n");
+			SET_FLAG(flag_storage_list_done);
+		} else {
+			bs_trace_info_time(1, "central: storage FETCH complete\n");
+			SET_FLAG(flag_storage_fetch_done);
+		}
+	}
+	return BT_GATT_ITER_CONTINUE;
+}
+
 /* LE64 encoding of WR_LINK_TIME_SYNC_EPOCH — written to the time-sync char. */
 static const uint8_t time_sync_epoch_le[8] = {
 	(uint8_t)(WR_LINK_TIME_SYNC_EPOCH & 0xff),
@@ -97,12 +136,18 @@ static uint8_t discover_cb(struct bt_conn *conn,
 			   struct bt_gatt_discover_params *params)
 {
 	if (!attr) {
-		/* Discovery exhausted all handles — verify both targets found. */
+		/* Discovery exhausted all handles — verify all targets found. */
 		if (!(bool)atomic_get(&flag_audio_subscribed)) {
 			FAIL("central: discovery ended without finding audioCodec\n");
 		}
 		if (!(bool)atomic_get(&flag_time_sync_written)) {
 			FAIL("central: discovery ended without finding time-sync char\n");
+		}
+		if (!(bool)atomic_get(&flag_storage_subscribed)) {
+			FAIL("central: discovery ended without finding storageStream\n");
+		}
+		if (storage_ctrl_handle == 0) {
+			FAIL("central: discovery ended without finding storageCtrl\n");
 		}
 		return BT_GATT_ITER_STOP;
 	}
@@ -112,7 +157,7 @@ static uint8_t discover_cb(struct bt_conn *conn,
 	 * Mirrors zephyr/tests/bsim/bluetooth/host/gatt/notify pattern. */
 	const struct bt_gatt_chrc *chrc = attr->user_data;
 
-	/* audioCodec: subscribe, then keep walking for the time-sync char. */
+	/* audioCodec: subscribe, then keep walking for time-sync + storage. */
 	if (bt_uuid_cmp(chrc->uuid, BT_UUID_OMI_AUDIO_CODEC) == 0) {
 		bs_trace_info_time(1,
 			"central: found audioCodec chrc, value_handle=%u\n",
@@ -128,7 +173,7 @@ static uint8_t discover_cb(struct bt_conn *conn,
 			return BT_GATT_ITER_STOP;
 		}
 		SET_FLAG(flag_audio_subscribed);
-		return BT_GATT_ITER_CONTINUE; /* keep walking for time-sync */
+		return BT_GATT_ITER_CONTINUE;
 	}
 
 	/* D7 time-sync char: write the fixed test epoch as LE64. */
@@ -147,7 +192,34 @@ static uint8_t discover_cb(struct bt_conn *conn,
 			return BT_GATT_ITER_STOP;
 		}
 		SET_FLAG(flag_time_sync_written);
-		return BT_GATT_ITER_STOP; /* both targets handled */
+		return BT_GATT_ITER_CONTINUE; /* keep walking for storage */
+	}
+
+	/* Storage stream: subscribe for LIST/FETCH responses. */
+	if (bt_uuid_cmp(chrc->uuid, BT_UUID_WR_STORAGE_STREAM) == 0) {
+		bs_trace_info_time(1,
+			"central: found storageStream chrc, value_handle=%u\n",
+			chrc->value_handle);
+		storage_sub_params.notify = storage_notify_cb;
+		storage_sub_params.value = BT_GATT_CCC_NOTIFY;
+		storage_sub_params.value_handle = chrc->value_handle;
+		storage_sub_params.ccc_handle = chrc->value_handle + 1;
+		int err = bt_gatt_subscribe(conn, &storage_sub_params);
+		if (err && err != -EALREADY) {
+			FAIL("central: storageStream subscribe failed (%d)\n", err);
+			return BT_GATT_ITER_STOP;
+		}
+		SET_FLAG(flag_storage_subscribed);
+		return BT_GATT_ITER_CONTINUE;
+	}
+
+	/* Storage ctrl: save handle for LIST/FETCH command writes. */
+	if (bt_uuid_cmp(chrc->uuid, BT_UUID_WR_STORAGE_CTRL) == 0) {
+		bs_trace_info_time(1,
+			"central: found storageCtrl chrc, value_handle=%u\n",
+			chrc->value_handle);
+		storage_ctrl_handle = chrc->value_handle;
+		return BT_GATT_ITER_CONTINUE;
 	}
 
 	return BT_GATT_ITER_CONTINUE;
@@ -266,6 +338,30 @@ void wr_run_central(void)
 	WAIT_FOR_FLAG(flag_audio_subscribed);
 	WAIT_FOR_FLAG(flag_notify_received);
 	WAIT_FOR_FLAG(flag_time_sync_written);
-	PASS("central: link + %u-packet burst + time-sync written\n",
+	WAIT_FOR_FLAG(flag_storage_subscribed);
+
+	/* Storage LIST: send 0x00 to storageCtrl, wait for END notify. */
+	uint8_t list_cmd = 0x00;
+	err = bt_gatt_write_without_response(default_conn, storage_ctrl_handle,
+					     &list_cmd, sizeof(list_cmd), false);
+	if (err) {
+		FAIL("central: storage LIST write failed (%d)\n", err);
+		return;
+	}
+	bs_trace_info_time(1, "central: storage LIST command sent\n");
+	WAIT_FOR_FLAG(flag_storage_list_done);
+
+	/* Storage FETCH: send 0x01 to storageCtrl, wait for END notify. */
+	uint8_t fetch_cmd = 0x01;
+	err = bt_gatt_write_without_response(default_conn, storage_ctrl_handle,
+					     &fetch_cmd, sizeof(fetch_cmd), false);
+	if (err) {
+		FAIL("central: storage FETCH write failed (%d)\n", err);
+		return;
+	}
+	bs_trace_info_time(1, "central: storage FETCH command sent\n");
+	WAIT_FOR_FLAG(flag_storage_fetch_done);
+
+	PASS("central: link + %u-packet burst + time-sync + storage LIST + FETCH\n",
 	     WR_LINK_EXPECT_NOTIFY_COUNT);
 }
