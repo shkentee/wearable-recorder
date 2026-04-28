@@ -1,0 +1,21 @@
+diff --git a/omi/firmware/devkit/src/main.c b/omi/firmware/devkit/src/main.c
+--- a/omi/firmware/devkit/src/main.c
++++ b/omi/firmware/devkit/src/main.c
+@@ -14,6 +14,7 @@
+ #include "usb.h"
+ #include "utils.h"
+ #include "wdog_facade.h"
++#include "wr_battery_service.h"
+ #define BOOT_BLINK_DURATION_MS 600
+ #define BOOT_PAUSE_DURATION_MS 200
+ #define VBUS_DETECT (1U << 20)
+@@ -295,6 +296,9 @@
+         return transportErr;
+     }
+
++    /* Arm the Battery GATT Service 60 s polling workqueue. */
++    wr_battery_service_init();
++
+ #ifdef CONFIG_OMI_ENABLE_SPEAKER
+     play_boot_sound();
+ #endif
