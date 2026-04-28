@@ -30,6 +30,8 @@ class WrBleDevice {
   final _packetCount = StreamController<int>.broadcast();
   final _bytesSaved = StreamController<int>.broadcast();
   final _lostPackets = StreamController<int>.broadcast();
+  final _batteryLevel = StreamController<int>.broadcast();
+  StreamSubscription<List<int>>? _batterySub;
   int _count = 0;
   int _lostCount = 0;
   int? _lastPacketId; // null until at least one valid packet has arrived
@@ -43,6 +45,11 @@ class WrBleDevice {
   /// A uint16 rollover (0xFFFF → 0x0000) is treated as a gap of 1 (the next
   /// expected value) and does NOT count as a loss.
   Stream<int> get lostPackets => _lostPackets.stream;
+
+  /// Battery level in percent (0–100) from the BT Battery Service (0x180F).
+  /// Emits on connect (initial READ) and whenever the firmware notifies.
+  /// No-op if the firmware does not expose the Battery Service.
+  Stream<int> get batteryLevel => _batteryLevel.stream;
   Stream<BluetoothConnectionState> get state => _device.connectionState;
 
   String get name {
@@ -71,6 +78,33 @@ class WrBleDevice {
     _notifySub = codec.lastValueStream.listen(_onPacket);
     // D7: send current epoch so firmware uses wall-clock filenames.
     await _trySendTimeSync(services);
+    // Battery Service: subscribe for level updates (best-effort).
+    await _trySubscribeBattery(services);
+  }
+
+  /// Subscribes to the BT Battery Service (0x180F) if the firmware exposes it.
+  /// Reads the initial value, then listens for NOTIFY updates.
+  Future<void> _trySubscribeBattery(List<BluetoothService> services) async {
+    try {
+      final svc = services.firstWhere(
+        (s) => s.serviceUuid == Guid(WrUuids.batteryService),
+      );
+      final char = svc.characteristics.firstWhere(
+        (c) => c.characteristicUuid == Guid(WrUuids.batteryLevel),
+      );
+      // Initial read so the UI shows a value immediately.
+      final raw = await char.read();
+      if (raw.isNotEmpty) _batteryLevel.add(raw[0].clamp(0, 100));
+      // Subscribe for incremental updates (firmware notifies every 60 s).
+      if (char.properties.notify) {
+        await char.setNotifyValue(true);
+        _batterySub = char.lastValueStream.listen((raw) {
+          if (raw.isNotEmpty) _batteryLevel.add(raw[0].clamp(0, 100));
+        });
+      }
+    } catch (_) {
+      // Firmware without Battery Service (plain omi builds) — continue.
+    }
   }
 
   /// Writes the current Unix epoch (seconds) to the D7 time-sync characteristic.
@@ -161,6 +195,8 @@ class WrBleDevice {
   Future<void> disconnect() async {
     await _notifySub?.cancel();
     _notifySub = null;
+    await _batterySub?.cancel();
+    _batterySub = null;
     await _stateSub?.cancel();
     _stateSub = null;
     await _sink?.close();
@@ -175,5 +211,6 @@ class WrBleDevice {
     await _packetCount.close();
     await _bytesSaved.close();
     await _lostPackets.close();
+    await _batteryLevel.close();
   }
 }

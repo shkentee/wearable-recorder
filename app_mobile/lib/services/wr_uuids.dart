@@ -23,6 +23,11 @@ class WrUuids {
   static const String storageStream      = '30295781-4301-eabd-2904-2849adfeae43';
   static const String storageReadControl = '30295782-4301-eabd-2904-2849adfeae43';
 
+  // Bluetooth standard Battery Service (0x180F) + Battery Level char (0x2A19).
+  // Exposed by wr_battery_service.c; value is uint8 0–100 (percent).
+  static const String batteryService = '0000180f-0000-1000-8000-00805f9b34fb';
+  static const String batteryLevel   = '00002a19-0000-1000-8000-00805f9b34fb';
+
   // Default device name advertised by omi devkit firmware.
   static const String defaultDeviceName = 'Omi DK1';
 }

@@ -34,6 +34,7 @@ class _DevicePageState extends State<DevicePage> {
   int _packets = 0;
   int _savedBytes = 0;
   int _lostPackets = 0;
+  int? _batteryPct; // null until first Battery Service notify/read
   bool _uploading = false;
 
   WrDriveUploader get _uploader =>
@@ -65,6 +66,10 @@ class _DevicePageState extends State<DevicePage> {
     widget.device.lostPackets.listen((n) {
       if (!mounted) return;
       setState(() => _lostPackets = n);
+    });
+    widget.device.batteryLevel.listen((pct) {
+      if (!mounted) return;
+      setState(() => _batteryPct = pct);
     });
     _connect();
   }
@@ -145,6 +150,27 @@ class _DevicePageState extends State<DevicePage> {
       appBar: AppBar(
         title: Text(widget.device.name),
         actions: [
+          if (_batteryPct != null)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    _batteryPct! >= 80
+                        ? Icons.battery_full
+                        : _batteryPct! >= 40
+                            ? Icons.battery_4_bar
+                            : Icons.battery_alert,
+                    color: _batteryPct! < 20 ? Colors.red : null,
+                    size: 20,
+                  ),
+                  const SizedBox(width: 2),
+                  Text('$_batteryPct%',
+                      style: const TextStyle(fontSize: 13)),
+                ],
+              ),
+            ),
           IconButton(
             icon: const Icon(Icons.sd_storage_outlined),
             tooltip: 'Device SD files',

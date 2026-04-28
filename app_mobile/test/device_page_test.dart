@@ -26,6 +26,7 @@ void main() {
   late StreamController<int> packetCtrl;
   late StreamController<int> bytesCtrl;
   late StreamController<int> lostCtrl;
+  late StreamController<int> batteryCtrl;
   late Completer<void> connectCompleter;
   late _MockUploader mockUploader;
 
@@ -38,6 +39,7 @@ void main() {
     packetCtrl = StreamController<int>.broadcast();
     bytesCtrl = StreamController<int>.broadcast();
     lostCtrl = StreamController<int>.broadcast();
+    batteryCtrl = StreamController<int>.broadcast();
     connectCompleter = Completer<void>();
     mockUploader = _MockUploader();
 
@@ -47,6 +49,7 @@ void main() {
     when(() => device.packetCount).thenAnswer((_) => packetCtrl.stream);
     when(() => device.bytesSaved).thenAnswer((_) => bytesCtrl.stream);
     when(() => device.lostPackets).thenAnswer((_) => lostCtrl.stream);
+    when(() => device.batteryLevel).thenAnswer((_) => batteryCtrl.stream);
     // DevicePage._connect calls device.connect() with no args, so we
     // only need to stub that form. Returning a Completer-controlled
     // future lets individual tests decide when to resolve / fail it.
@@ -64,6 +67,7 @@ void main() {
     await packetCtrl.close();
     await bytesCtrl.close();
     await lostCtrl.close();
+    await batteryCtrl.close();
   });
 
   /// Default helper — no uploader override (used by tests that don't navigate
