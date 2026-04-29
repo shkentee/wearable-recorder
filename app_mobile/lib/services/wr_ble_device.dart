@@ -60,7 +60,12 @@ class WrBleDevice {
   String get id => _device.remoteId.str;
 
   Future<void> connect({Duration timeout = const Duration(seconds: 15)}) async {
-    await _device.connect(timeout: timeout, autoConnect: false);
+    // autoConnect: true on Android avoids the GATT_ERROR (0x85 / 133) that
+    // otherwise hits first-time connections to never-bonded peripherals.
+    // It queues the connection at the OS level and retries until cancel,
+    // which is more tolerant of address-type / param mismatches than the
+    // direct-connect path.
+    await _device.connect(timeout: timeout, autoConnect: true);
     final services = await _device.discoverServices();
     _discoveredServices = services;
     final audio = services.firstWhere(
