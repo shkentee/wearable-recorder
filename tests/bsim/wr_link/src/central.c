@@ -286,15 +286,34 @@ static void device_found(const bt_addr_le_t *addr, int8_t rssi, uint8_t type,
 	bt_data_parse(ad, eir_found, (void *)addr);
 }
 
+static void mtu_exchange_cb(struct bt_conn *conn, uint8_t att_err,
+			     struct bt_gatt_exchange_params *params)
+{
+	ARG_UNUSED(params);
+	bs_trace_info_time(1, "central: MTU exchange %s (att_err=%u)\n",
+			   att_err ? "failed" : "ok", att_err);
+	start_discovery(conn);
+}
+
+static struct bt_gatt_exchange_params mtu_params = {
+	.func = mtu_exchange_cb,
+};
+
 static void central_connected(struct bt_conn *conn, uint8_t err)
 {
 	if (err) {
 		FAIL("central: connection failed (%u)\n", err);
 		return;
 	}
-	bs_trace_info_time(1, "central: connected, starting discovery\n");
+	bs_trace_info_time(1, "central: connected, exchanging MTU\n");
 	SET_FLAG(flag_central_connected);
-	start_discovery(conn);
+	int mtu_err = bt_gatt_exchange_mtu(conn, &mtu_params);
+	if (mtu_err) {
+		/* Fall back to discovery at default MTU if exchange fails. */
+		bs_trace_info_time(1, "central: MTU exchange start failed (%d), "
+				      "proceeding with default MTU\n", mtu_err);
+		start_discovery(conn);
+	}
 }
 
 static void central_disconnected(struct bt_conn *conn, uint8_t reason)
