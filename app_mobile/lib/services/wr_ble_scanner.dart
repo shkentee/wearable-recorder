@@ -31,7 +31,9 @@ class WrBleScanner {
       (rs) {
         final filtered = rs.where((r) {
           final name = r.device.platformName;
-          return name == WrUuids.defaultDeviceName || name.startsWith('Omi');
+          return name == WrUuids.defaultDeviceName ||
+              name.startsWith('Omi') ||
+              name.startsWith('Friend');
         }).toList();
         _resultsController.add(filtered);
       },

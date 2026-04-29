@@ -28,6 +28,6 @@ class WrUuids {
   static const String batteryService = '0000180f-0000-1000-8000-00805f9b34fb';
   static const String batteryLevel   = '00002a19-0000-1000-8000-00805f9b34fb';
 
-  // Default device name advertised by omi devkit firmware.
-  static const String defaultDeviceName = 'Omi DK1';
+  // Default device name advertised by omi devkit v1 firmware.
+  static const String defaultDeviceName = 'Friend';
 }
