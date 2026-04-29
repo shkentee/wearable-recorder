@@ -15,6 +15,12 @@
  *   D4 (P0.04) — drive HIGH so the tact switch has a 3V3 source.
  *   D5 (P0.05) — read; HIGH means button is closed.
  *
+ * D5 must be configured with an internal pull-down — without one, the
+ * floating input couples to the adjacent D4 (driven HIGH) and reads as
+ * "button held" even when it isn't, which kicks the device into MSC
+ * mode → SD-backed storage init fails → 30 s WDT reset loop. Confirmed
+ * on real hardware 2026-04-30.
+ *
  * We can't reuse omi's button.c structures because button_init() runs
  * inside main(), which is after our SYS_INIT. So we do raw GPIO init
  * here, sample for ~1 s, then back off so omi's button_init() can take
@@ -63,7 +69,8 @@ static int wr_msc_mode_boot_detect(void)
 	}
 	gpio_pin_set(gpio0, WR_MSC_BOOT_PIN_OUT, 1);
 
-	err = gpio_pin_configure(gpio0, WR_MSC_BOOT_PIN_IN, GPIO_INPUT);
+	err = gpio_pin_configure(gpio0, WR_MSC_BOOT_PIN_IN,
+				 GPIO_INPUT | GPIO_PULL_DOWN);
 	if (err) {
 		LOG_WRN("wr_msc_mode: D5 configure failed (%d)", err);
 		return 0;
