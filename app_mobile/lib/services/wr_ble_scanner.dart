@@ -30,10 +30,20 @@ class WrBleScanner {
     _subscription = FlutterBluePlus.scanResults.listen(
       (rs) {
         final filtered = rs.where((r) {
-          final name = r.device.platformName;
-          return name == WrUuids.defaultDeviceName ||
-              name.startsWith('Omi') ||
-              name.startsWith('Friend');
+          // platformName is the OS-cached friendly name and stays empty
+          // for never-bonded devices on Android. Fall back through every
+          // name source flutter_blue_plus exposes so a fresh "Friend"
+          // advertisement still gets matched.
+          final candidates = <String>[
+            r.device.platformName,
+            r.advertisementData.advName,
+          ];
+          return candidates.any(
+            (n) =>
+                n == WrUuids.defaultDeviceName ||
+                n.startsWith('Omi') ||
+                n.startsWith('Friend'),
+          );
         }).toList();
         _resultsController.add(filtered);
       },
