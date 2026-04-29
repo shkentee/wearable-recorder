@@ -4,9 +4,14 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
 import 'wr_uuids.dart';
 
-/// Thin wrapper around FlutterBluePlus that scans only for advertisers
-/// exposing the omi audio service. Filtering by UUID at the OS level
-/// keeps power use down and avoids enumerating every nearby BLE device.
+/// Thin wrapper around FlutterBluePlus that scans for wearable-recorder
+/// devices and filters results by device name on the Dart side.
+///
+/// Android's OS-level withServices filter only matches UUIDs in the main
+/// advertisement packet, not the scan response. Since omi firmware places
+/// the audio service UUID in the scan response, OS-level filtering misses
+/// the device on Android. We scan without a UUID filter and drop results
+/// that don't look like omi devices instead.
 class WrBleScanner {
   static const Duration defaultTimeout = Duration(seconds: 12);
 
@@ -23,13 +28,16 @@ class WrBleScanner {
     }
     _subscription?.cancel();
     _subscription = FlutterBluePlus.scanResults.listen(
-      (rs) => _resultsController.add(rs),
+      (rs) {
+        final filtered = rs.where((r) {
+          final name = r.device.platformName;
+          return name == WrUuids.defaultDeviceName || name.startsWith('Omi');
+        }).toList();
+        _resultsController.add(filtered);
+      },
       onError: (e) => _resultsController.addError(e),
     );
-    await FlutterBluePlus.startScan(
-      withServices: [Guid(WrUuids.audioService)],
-      timeout: timeout,
-    );
+    await FlutterBluePlus.startScan(timeout: timeout);
   }
 
   Future<void> stop() async {
