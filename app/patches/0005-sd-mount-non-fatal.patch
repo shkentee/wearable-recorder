@@ -1,0 +1,19 @@
+diff --git a/omi/firmware/devkit/src/main.c b/omi/firmware/devkit/src/main.c
+index e8df45d..6e8ab20 100644
+--- a/omi/firmware/devkit/src/main.c
++++ b/omi/firmware/devkit/src/main.c
+@@ -227,8 +227,12 @@ int main(void)
+ 
+     err = mount_sd_card();
+     if (err) {
+-        LOG_ERR("Failed to mount SD card (err %d)", err);
+-        return err;
++        /* Bring-up note 2026-04-30: SD card not detected on first
++         * hardware cut. Don't kill the boot path - log loudly and
++         * continue so BLE advertising still comes up. storage_init
++         * below is already non-fatal; host-side scan and connect can
++         * proceed regardless. */
++        LOG_ERR("Failed to mount SD card (err %d) - continuing without SD", err);
+     }
+     k_msleep(500);
+ 
