@@ -93,21 +93,27 @@ static int wr_msc_mode_boot_detect(void)
 		wr_msc_mode_flag = true;
 		LOG_INF("wr_msc_mode: button held at boot (%d/%d) — MSC MODE",
 			high, WR_MSC_BOOT_SAMPLE_COUNT);
-
-		/* Start USB now so the host sees a mass-storage device.
-		 * CONFIG_USB_DEVICE_INITIALIZE_AT_BOOT=n means we must do
-		 * this manually. With CONFIG_UART_CONSOLE=y, omi's init_usb()
-		 * only sets the status callback (no usb_disable/re-enable), so
-		 * there is no conflict. */
-		int usb_err = usb_enable(NULL);
-		if (usb_err && usb_err != -EALREADY) {
-			LOG_ERR("wr_msc_mode: usb_enable failed (%d)", usb_err);
-		} else {
-			LOG_INF("wr_msc_mode: USB MSC stack started");
-		}
 	} else {
 		LOG_INF("wr_msc_mode: recording mode (%d/%d high)",
 			high, WR_MSC_BOOT_SAMPLE_COUNT);
+	}
+
+	/* Bring-up debug 2026-04-30: usb_enable() is called unconditionally so
+	 * the host always sees the USB CDC ACM serial console — needed to
+	 * capture transport-layer disconnect-reason logs during BLE bring-up.
+	 * The USB MSC LUN stays compiled in but only does any work when the
+	 * host actually issues SCSI commands; until then it is dormant, so
+	 * having it visible on the bus (without SD mounted) is harmless.
+	 *
+	 * CONFIG_USB_DEVICE_INITIALIZE_AT_BOOT=n means Zephyr does not auto-
+	 * init the USB stack — we must do it here. With CONFIG_UART_CONSOLE=y,
+	 * omi's init_usb() only sets the status callback (no usb_disable /
+	 * re-enable), so there is no conflict. */
+	int usb_err = usb_enable(NULL);
+	if (usb_err && usb_err != -EALREADY) {
+		LOG_ERR("wr_msc_mode: usb_enable failed (%d)", usb_err);
+	} else {
+		LOG_INF("wr_msc_mode: USB stack enabled (CDC ACM + MSC)");
 	}
 
 	return 0;
