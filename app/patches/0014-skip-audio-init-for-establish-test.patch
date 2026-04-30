@@ -1,0 +1,51 @@
+--- a/firmware/devkit/src/main.c
++++ b/firmware/devkit/src/main.c
+@@ -298,18 +298,9 @@
+
+     set_led_blue(true);
+
+-    // Audio codec(opus) callback
+-    set_codec_callback(codec_handler);
+-    err = codec_start();
+-    if (err) {
+-        LOG_ERR("Failed to start codec: %d", err);
+-        // Blink blue LED to indicate error
+-        for (int i = 0; i < 5; i++) {
+-            set_led_blue(!gpio_pin_get_dt(&led_blue));
+-            k_msleep(200);
+-        }
+-        set_led_blue(false);
+-        return err;
+-    }
++    // v22 (2026-05-01): skip audio codec init to test whether the
++    // PDM/Opus pipeline is what's preventing BLE establishment.
++    // Re-enable for production once establishment is confirmed working.
++    LOG_INF("v22: codec_start() skipped (establishment test)");
+
+ #ifdef CONFIG_OMI_ENABLE_HAPTIC
+     play_haptic_milli(500);
+@@ -325,18 +316,9 @@
+     set_led_red(true);
+     set_led_green(true);
+
+-    set_mic_callback(mic_handler);
+-    err = mic_start();
+-    if (err) {
+-        LOG_ERR("Failed to start microphone: %d", err);
+-        // Blink red and green LEDs to indicate error
+-        for (int i = 0; i < 5; i++) {
+-            set_led_red(!gpio_pin_get_dt(&led_red));
+-            set_led_green(!gpio_pin_get_dt(&led_green));
+-            k_msleep(200);
+-        }
+-        set_led_red(false);
+-        set_led_green(false);
+-        return err;
+-    }
++    // v22 (2026-05-01): skip microphone init to remove the PDM IRQ
++    // and the audio buffer pipeline as a contention source for the
++    // SoftDevice Controller during establishment.
++    LOG_INF("v22: mic_start() skipped (establishment test)");
+
+     set_led_red(false);
+     set_led_green(false);
