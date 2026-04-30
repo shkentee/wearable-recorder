@@ -1,0 +1,29 @@
+diff --git a/omi/firmware/devkit/src/transport.c b/omi/firmware/devkit/src/transport.c
+index 2b63517..cb67137 100644
+--- a/omi/firmware/devkit/src/transport.c
++++ b/omi/firmware/devkit/src/transport.c
+@@ -854,18 +854,12 @@ int transport_start()
+         LOG_INF("Battery initialized");
+     }
+ 
+-    // Start pusher
+-    ring_buf_init(&ring_buf, sizeof(tx_queue), tx_queue);
+-    k_thread_create(&pusher_thread,
+-                    pusher_stack,
+-                    K_THREAD_STACK_SIZEOF(pusher_stack),
+-                    (k_thread_entry_t) pusher,
+-                    NULL,
+-                    NULL,
+-                    NULL,
+-                    K_PRIO_PREEMPT(7),
+-                    0,
+-                    K_NO_WAIT);
++    // v23 (2026-05-01): skip pusher thread for establishment test.
++    // The pusher loops on read_from_tx_queue + push_to_gatt — even with
++    // audio init disabled (v22), the thread itself runs and grabs the
++    // ring_buf mutex etc. Disabling it removes the last omi-specific
++    // thread from the runtime so we can isolate firmware vs hardware.
++    LOG_INF("v23: pusher thread skipped (establishment test)");
+ 
+     return 0;
+ }
