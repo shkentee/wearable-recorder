@@ -1,0 +1,26 @@
+From: knsol <noreply@anthropic.com>
+Subject: [PATCH] debug: bypass led_start() to test if LED init is the hang
+
+WR_TRACE 2a_pre_led_start landed but 2b_post_led_start did not.
+led_start() in led.c does:
+    gpio_is_ready_dt + gpio_pin_configure_dt for led0/1/2
+    LOG_INF("LEDs started")
+None of those should block, so this is suspicious.
+
+Replace `err = led_start()` with `err = 0` to bypass the call.
+If main reaches WR_TRACE 3 / 4 / 5 / 6 with the bypass in place,
+we know led_start is the culprit and can dig further.
+---
+diff --git a/omi/firmware/devkit/src/main.c b/omi/firmware/devkit/src/main.c
+--- a/omi/firmware/devkit/src/main.c
++++ b/omi/firmware/devkit/src/main.c
+@@ -165,7 +165,8 @@ int main(void)
+     LOG_PRINTK("\n");
+     printk("WR_TRACE: 2a_pre_led_start\n");
+
+-    err = led_start();
++    /* patch 0025: bypass led_start() to isolate hang */
++    err = 0;
+     printk("WR_TRACE: 2b_post_led_start err=%d\n", err);
+     if (err) {
+         LOG_ERR("Failed to initialize LEDs (err %d)", err);
