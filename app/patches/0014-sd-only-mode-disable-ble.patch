@@ -1,28 +1,23 @@
 From: knsol <noreply@anthropic.com>
 Subject: [PATCH] fix: SD-only mode — keep pusher thread, tolerate BLE init failure
 
-Earlier version of this patch skipped transport_start() entirely.
-That also skipped the pusher thread creation at the bottom of
-transport_start(), which is the thread that drains the audio TX
-ring buffer and writes packets to SD via write_to_storage(). Result:
-SD mounts but no audio ever lands on it.
+Earlier version skipped transport_start() entirely. That also skipped
+the pusher thread creation at the bottom of transport_start(), which
+is the thread that drains the audio TX ring buffer and writes packets
+to SD via write_to_storage(). Result: SD mounts but no audio writes.
 
-New approach: leave the call to transport_start() in place, but
-patch transport_start() itself so that if bt_enable() fails (which
-it does on this board cut), we log the error and continue to the
-pusher thread anyway. SD path still works, BLE silently absent.
+New approach: keep the call to transport_start() in main.c, but change
+the error handling — non-zero return is logged as warning and main
+continues. transport.c itself is patched so bt_enable() failure no
+longer returns early; falls through to GATT service registration and
+the pusher thread creation. SD path now works even when BLE is dead.
+
+This patch must be applied AFTER 0001-0013.
 ---
 diff --git a/omi/firmware/devkit/src/main.c b/omi/firmware/devkit/src/main.c
-index 1ccc6d2..71c3f8a 100644
 --- a/omi/firmware/devkit/src/main.c
 +++ b/omi/firmware/devkit/src/main.c
-@@ -286,18 +286,11 @@ int main(void)
-     set_led_green(true);
-     set_led_green(false);
-
--    // Start transport
-+    // SD-only mode (2026-05-01/02): transport_start() patched to
-+    // tolerate BLE init failure and still start the pusher thread.
+@@ -290,16 +290,7 @@ int main(void)
      int transportErr;
      transportErr = transport_start();
      if (transportErr) {
@@ -43,16 +38,13 @@ index 1ccc6d2..71c3f8a 100644
 diff --git a/omi/firmware/devkit/src/transport.c b/omi/firmware/devkit/src/transport.c
 --- a/omi/firmware/devkit/src/transport.c
 +++ b/omi/firmware/devkit/src/transport.c
-@@ -849,11 +849,11 @@ int transport_start()
-     bt_conn_cb_register(&_callback_references);
-
+@@ -851,10 +851,10 @@ int transport_start()
      // Enable Bluetooth
      int err = bt_enable(NULL);
      if (err) {
 -        LOG_ERR("Transport bluetooth init failed (err %d)", err);
 -        return err;
 +        LOG_WRN("Transport bluetooth init failed (err %d) — SD-only mode continuing", err);
-+        /* fall through to pusher thread creation below */
 +    } else {
 +        LOG_INF("Transport bluetooth initialized");
      }
