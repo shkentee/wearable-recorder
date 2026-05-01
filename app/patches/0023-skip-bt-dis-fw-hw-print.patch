@@ -25,7 +25,7 @@ the offending macro.
 diff --git a/omi/firmware/devkit/src/main.c b/omi/firmware/devkit/src/main.c
 --- a/omi/firmware/devkit/src/main.c
 +++ b/omi/firmware/devkit/src/main.c
-@@ -150,8 +150,9 @@ int main(void)
+@@ -150,7 +150,8 @@ int main(void)
      printk("WR_TRACE: 1a_pre_model\n");
      printk("WR_TRACE: 1b_model: %s\n", CONFIG_BT_DIS_MODEL);
 -    printk("WR_TRACE: 1c_fw: %s\n", CONFIG_BT_DIS_FW_REV_STR);
