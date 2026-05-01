@@ -1,0 +1,37 @@
+diff --git a/omi/firmware/devkit/src/main.c b/omi/firmware/devkit/src/main.c
+index e8df45d..aa4e901 100644
+--- a/omi/firmware/devkit/src/main.c
++++ b/omi/firmware/devkit/src/main.c
+@@ -273,21 +273,17 @@ int main(void)
+     set_led_green(true);
+     set_led_green(false);
+ 
+-    // Start transport
+-    int transportErr;
+-    transportErr = transport_start();
+-    if (transportErr) {
+-        LOG_ERR("Failed to start transport (err %d)", transportErr);
+-        // TODO: Detect the current core is app core or net core
+-        // Blink green LED to indicate error
+-        for (int i = 0; i < 5; i++) {
+-            set_led_green(!gpio_pin_get_dt(&led_green));
+-            k_msleep(200);
+-        }
+-        set_led_green(false);
+-
+-        return transportErr;
+-    }
++    // === SD-only mode (2026-05-01): BLE transport disabled. ===
++    // The XIAO BLE Sense board on this batch fails BLE establishment
++    // (337 ms drop, repeats kill USB CDC after ~few minutes). Until
++    // we get a working board / sniffer, skip transport_start() so the
++    // device runs as a pure SD audio recorder + USB MSC reader.
++    //
++    // To re-enable BLE later: drop patch 0014 (this hunk).
++    // ============================================================
++    LOG_INF("SD-only mode: transport_start() skipped, BLE disabled");
++    int transportErr = 0;
++    (void)transportErr;
+ 
+ #ifdef CONFIG_OMI_ENABLE_SPEAKER
+     play_boot_sound();
