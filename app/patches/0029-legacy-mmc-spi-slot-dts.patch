@@ -14,7 +14,7 @@ pattern that the legacy DISK_DRIVER_SDMMC driver speaks directly.
 diff --git a/omi/firmware/devkit/overlay/xiao_ble_sense_devkitv1-spisd.overlay b/omi/firmware/devkit/overlay/xiao_ble_sense_devkitv1-spisd.overlay
 --- a/omi/firmware/devkit/overlay/xiao_ble_sense_devkitv1-spisd.overlay
 +++ b/omi/firmware/devkit/overlay/xiao_ble_sense_devkitv1-spisd.overlay
-@@ -3,16 +3,11 @@
+@@ -3,16 +3,10 @@
      pinctrl-0 = <&custom_spi>;
      pinctrl-1 = <&custom_spi>;
      pinctrl-names = "default", "sleep";
