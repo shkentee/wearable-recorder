@@ -1,0 +1,19 @@
+From: knsol <noreply@anthropic.com>
+Subject: [PATCH] fix: add disk-name = "SD" property to sdmmc-disk node
+
+Empirically, the only build that successfully completed SD init had
+this property in the DTS. Without it, CMD0 times out -116 even at
+1 MHz. Possibly Zephyr's sdmmc_subsys.c needs the property even
+though docs say it's ignored.
+---
+diff --git a/omi/firmware/devkit/overlay/xiao_ble_sense_devkitv1-spisd.overlay b/omi/firmware/devkit/overlay/xiao_ble_sense_devkitv1-spisd.overlay
+--- a/omi/firmware/devkit/overlay/xiao_ble_sense_devkitv1-spisd.overlay
++++ b/omi/firmware/devkit/overlay/xiao_ble_sense_devkitv1-spisd.overlay
+@@ -12,6 +12,7 @@
+         mmc {
+             compatible = "zephyr,sdmmc-disk";
+             status = "okay";
++            disk-name = "SD";
+         };
+         spi-max-frequency = <1000000>;  // patch 0017: 1 MHz for breadboard wiring
+     };
