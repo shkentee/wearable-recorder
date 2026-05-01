@@ -1,0 +1,26 @@
+diff --git a/omi/firmware/devkit/overlay/xiao_ble_sense_devkitv1-spisd.overlay b/omi/firmware/devkit/overlay/xiao_ble_sense_devkitv1-spisd.overlay
+index 0be31f6..99fa9f7 100644
+--- a/omi/firmware/devkit/overlay/xiao_ble_sense_devkitv1-spisd.overlay
++++ b/omi/firmware/devkit/overlay/xiao_ble_sense_devkitv1-spisd.overlay
+@@ -25,3 +25,21 @@
+         };
+     };
+ };
++
++/* ============================================================
++ * No external battery voltage divider on this hardware cut.
++ * The XIAO BLE Sense doesn't have a built-in battery monitor —
++ * omi's battery.c expects a divider to pin AIN7 (P0.31), but the
++ * board ships with that pin floating. Reading it returns 0 mV =
++ * "0 % battery" and wr_led_status flashes a low-battery warning
++ * forever.
++ *
++ * Disabling the ADC node at the DTS level makes
++ * device_is_ready(adc) return false at runtime, so wr_led_status
++ * skips its ADC sampler and keeps batt_pct at the default 100.
++ * No more spurious warning. Re-enable when the battery divider
++ * is actually populated on a future board cut.
++ * ============================================================ */
++&adc {
++    status = "disabled";
++};
