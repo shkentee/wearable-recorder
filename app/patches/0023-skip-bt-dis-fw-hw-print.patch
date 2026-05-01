@@ -1,0 +1,38 @@
+From: knsol <noreply@anthropic.com>
+Subject: [PATCH] fix: skip CONFIG_BT_DIS_FW_REV_STR / HW_REV_STR printks
+
+WR_TRACE 1a/1b/1c diagnostics from patch 0022 narrowed the hang
+exactly:
+
+    1a_pre_model        — visible
+    1b_model: Friend... — visible (CONFIG_BT_DIS_MODEL works fine)
+    1c_fw: %s           — NEVER appears
+
+So evaluating CONFIG_BT_DIS_FW_REV_STR locks up main. Since
+CONFIG_BT_DIS_MODEL works on the same boot, the BT subsystem is at
+least partially configured. CONFIG_BT_DIS_FW_REV_STR most likely
+expands to something autoconf generated whose backing storage
+isn't safely mapped (a __device_dts_ord_* symbol that resolves to
+an unreadable address, or a NULL pointer), and printk("%s", ...)
+walks it until it hits a fault or never finds the terminator.
+
+These two prints are purely decorative bring-up info. Drop them
+entirely. Keep 1a / 1b (model is fine), then jump straight to 1e
+and the rest of main. If a future build needs to record FW/HW
+strings, expose them via a different surface that doesn't dereference
+the offending macro.
+---
+diff --git a/omi/firmware/devkit/src/main.c b/omi/firmware/devkit/src/main.c
+--- a/omi/firmware/devkit/src/main.c
++++ b/omi/firmware/devkit/src/main.c
+@@ -150,8 +150,9 @@ int main(void)
+     printk("WR_TRACE: 1a_pre_model\n");
+     printk("WR_TRACE: 1b_model: %s\n", CONFIG_BT_DIS_MODEL);
+-    printk("WR_TRACE: 1c_fw: %s\n", CONFIG_BT_DIS_FW_REV_STR);
+-    printk("WR_TRACE: 1d_hw: %s\n", CONFIG_BT_DIS_HW_REV_STR);
++    /* patch 0023: CONFIG_BT_DIS_FW_REV_STR / HW_REV_STR cause main
++     * to hang in NCS v2.7 on this build (BT subsystem partially
++     * configured per BT_GATT_AUTO_UPDATE_MTU warning). Skip them. */
+     printk("WR_TRACE: 1e_after_dis\n");
+     /* patch 0021: skipped — pm_device_action_run hangs main when
+      * SPI_NOR=n (deps unsatisfied in NCS v2.7). See patch header. */
