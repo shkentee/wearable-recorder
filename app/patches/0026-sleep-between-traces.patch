@@ -1,0 +1,43 @@
+From: knsol <noreply@anthropic.com>
+Subject: [PATCH] debug: k_msleep between WR_TRACE printks (CDC backpressure)
+
+Even with led_start() bypassed (patch 0025: err = 0), main still
+goes silent after WR_TRACE 2a_pre_led_start. Two adjacent printks
+with only `err = 0` between them — there is nothing in main to
+hang on. So the silence is from CDC ACM TX backpressure.
+
+Confirm by inserting k_msleep(100) between 2a and 2b. If 2b lands
+after the sleep, the CDC ring drains during the wait and main keeps
+going. The downstream printks (3_pre_led_seq onwards) will then
+also need similar pacing, but at least we will know we are looking
+at a buffer-flow problem, not a main-thread halt.
+
+Also bumps the print between 4_post_led_seq and 4a_pre_wdt with a
+shorter sleep so we keep getting output past the boot LED sequence.
+---
+diff --git a/omi/firmware/devkit/src/main.c b/omi/firmware/devkit/src/main.c
+--- a/omi/firmware/devkit/src/main.c
++++ b/omi/firmware/devkit/src/main.c
+@@ -167,6 +167,7 @@ int main(void)
+     printk("WR_TRACE: 2a_pre_led_start\n");
+     /* patch 0025: bypass led_start() to isolate hang */
+     err = 0;
++    k_msleep(100);
+     printk("WR_TRACE: 2b_post_led_start err=%d\n", err);
+     if (err) {
+         LOG_ERR("Failed to initialize LEDs (err %d)", err);
+@@ -175,11 +176,14 @@ int main(void)
+
+     printk("WR_TRACE: 3_pre_led_seq\n");
+     // Run the boot LED sequence
++    k_msleep(50);
+     boot_led_sequence();
++    k_msleep(50);
+     printk("WR_TRACE: 4_post_led_seq\n");
+
+     // Initialize watchdog early to catch any freezes during boot
+     printk("WR_TRACE: 4a_pre_wdt\n");
++    k_msleep(50);
+     err = watchdog_init();
+     printk("WR_TRACE: 4b_post_wdt err=%d\n", err);
+     if (err) {
