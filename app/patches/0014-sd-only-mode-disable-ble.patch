@@ -1,15 +1,31 @@
+From: knsol <noreply@anthropic.com>
+Subject: [PATCH] fix: SD-only mode — keep pusher thread, tolerate BLE init failure
+
+Earlier version of this patch skipped transport_start() entirely.
+That also skipped the pusher thread creation at the bottom of
+transport_start(), which is the thread that drains the audio TX
+ring buffer and writes packets to SD via write_to_storage(). Result:
+SD mounts but no audio ever lands on it.
+
+New approach: leave the call to transport_start() in place, but
+patch transport_start() itself so that if bt_enable() fails (which
+it does on this board cut), we log the error and continue to the
+pusher thread anyway. SD path still works, BLE silently absent.
+---
 diff --git a/omi/firmware/devkit/src/main.c b/omi/firmware/devkit/src/main.c
 index 1ccc6d2..71c3f8a 100644
 --- a/omi/firmware/devkit/src/main.c
 +++ b/omi/firmware/devkit/src/main.c
-@@ -286,24 +286,17 @@ int main(void)
+@@ -286,18 +286,11 @@ int main(void)
      set_led_green(true);
      set_led_green(false);
- 
+
 -    // Start transport
--    int transportErr;
--    transportErr = transport_start();
--    if (transportErr) {
++    // SD-only mode (2026-05-01/02): transport_start() patched to
++    // tolerate BLE init failure and still start the pusher thread.
+     int transportErr;
+     transportErr = transport_start();
+     if (transportErr) {
 -        LOG_ERR("Failed to start transport (err %d)", transportErr);
 -        // TODO: Detect the current core is app core or net core
 -        // Blink green LED to indicate error
@@ -20,21 +36,27 @@ index 1ccc6d2..71c3f8a 100644
 -        set_led_green(false);
 -
 -        return transportErr;
--    }
--
--    /* Arm the Battery GATT Service 60 s polling workqueue. */
--    wr_battery_service_init();
-+    // === SD-only mode (2026-05-01): BLE transport disabled. ===
-+    // The XIAO BLE Sense individual on this batch fails BLE establishment
-+    // (337 ms drop, repeated attempts kill USB CDC after a few minutes).
-+    // Skipping transport_start() leaves the SDC unarmed so we never trigger
-+    // the failure mode. Audio + Opus + wr_chunk SD writer all stay active.
-+    //
-+    // To re-enable BLE later: drop patch 0014.
-+    LOG_INF("SD-only mode: transport_start() skipped, BLE disabled");
-+    int transportErr = 0;
-+    (void)transportErr;
-+    /* wr_battery_service_init() also skipped — depends on live BT/GATT. */
- 
- #ifdef CONFIG_OMI_ENABLE_SPEAKER
-     play_boot_sound();
++        LOG_WRN("transport_start non-zero (%d) — continuing in SD-only mode", transportErr);
+     }
+
+     /* Arm the Battery GATT Service 60 s polling workqueue. */
+diff --git a/omi/firmware/devkit/src/transport.c b/omi/firmware/devkit/src/transport.c
+--- a/omi/firmware/devkit/src/transport.c
++++ b/omi/firmware/devkit/src/transport.c
+@@ -849,11 +849,11 @@ int transport_start()
+     bt_conn_cb_register(&_callback_references);
+
+     // Enable Bluetooth
+     int err = bt_enable(NULL);
+     if (err) {
+-        LOG_ERR("Transport bluetooth init failed (err %d)", err);
+-        return err;
++        LOG_WRN("Transport bluetooth init failed (err %d) — SD-only mode continuing", err);
++        /* fall through to pusher thread creation below */
++    } else {
++        LOG_INF("Transport bluetooth initialized");
+     }
+-    LOG_INF("Transport bluetooth initialized");
+
+     //  Enable button
+ #ifdef CONFIG_OMI_ENABLE_BUTTON
