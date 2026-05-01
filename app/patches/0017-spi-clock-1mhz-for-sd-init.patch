@@ -1,0 +1,13 @@
+diff --git a/omi/firmware/devkit/overlay/xiao_ble_sense_devkitv1-spisd.overlay b/omi/firmware/devkit/overlay/xiao_ble_sense_devkitv1-spisd.overlay
+index 99fa9f7..06ac174 100644
+--- a/omi/firmware/devkit/overlay/xiao_ble_sense_devkitv1-spisd.overlay
++++ b/omi/firmware/devkit/overlay/xiao_ble_sense_devkitv1-spisd.overlay
+@@ -13,7 +13,7 @@
+             compatible = "zephyr,sdmmc-disk";
+             status = "okay";
+         };
+-        spi-max-frequency = <24000000>;  // 24 MHz SPI speed for SD card
++        spi-max-frequency = <1000000>;  // patch 0017: lowered 24 MHz → 1 MHz for SD init reliability
+     };
+ };
+ &pinctrl {
