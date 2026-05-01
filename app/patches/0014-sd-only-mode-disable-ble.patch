@@ -1,8 +1,8 @@
 diff --git a/omi/firmware/devkit/src/main.c b/omi/firmware/devkit/src/main.c
-index e8df45d..aa4e901 100644
+index 1ccc6d2..71c3f8a 100644
 --- a/omi/firmware/devkit/src/main.c
 +++ b/omi/firmware/devkit/src/main.c
-@@ -273,21 +273,17 @@ int main(void)
+@@ -286,24 +286,17 @@ int main(void)
      set_led_green(true);
      set_led_green(false);
  
@@ -21,17 +21,20 @@ index e8df45d..aa4e901 100644
 -
 -        return transportErr;
 -    }
+-
+-    /* Arm the Battery GATT Service 60 s polling workqueue. */
+-    wr_battery_service_init();
 +    // === SD-only mode (2026-05-01): BLE transport disabled. ===
-+    // The XIAO BLE Sense board on this batch fails BLE establishment
-+    // (337 ms drop, repeats kill USB CDC after ~few minutes). Until
-+    // we get a working board / sniffer, skip transport_start() so the
-+    // device runs as a pure SD audio recorder + USB MSC reader.
++    // The XIAO BLE Sense individual on this batch fails BLE establishment
++    // (337 ms drop, repeated attempts kill USB CDC after a few minutes).
++    // Skipping transport_start() leaves the SDC unarmed so we never trigger
++    // the failure mode. Audio + Opus + wr_chunk SD writer all stay active.
 +    //
-+    // To re-enable BLE later: drop patch 0014 (this hunk).
-+    // ============================================================
++    // To re-enable BLE later: drop patch 0014.
 +    LOG_INF("SD-only mode: transport_start() skipped, BLE disabled");
 +    int transportErr = 0;
 +    (void)transportErr;
++    /* wr_battery_service_init() also skipped — depends on live BT/GATT. */
  
  #ifdef CONFIG_OMI_ENABLE_SPEAKER
      play_boot_sound();
