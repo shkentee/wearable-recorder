@@ -1,0 +1,60 @@
+From: knsol <noreply@anthropic.com>
+Subject: [PATCH] debug: WR_TRACE printk checkpoints in main()
+
+Boot capture shows main thread logging "Booting..." and "Model:..."
+then going silent. With LOG_MODE_DEFERRED enabled, LOG_INF should not
+block main. So the hang is somewhere after the Model log but before
+"Mount SD card..." would have been logged. Sprinkle printk()
+checkpoints (which write directly to console without the log
+subsystem) so we can pinpoint exactly where main hangs:
+  1_dcdc_done    — after NRF_POWER->DCDCEN0 = 1
+  2_qspi_done    — after the QSPI flash device_is_ready / pm_device
+                   action block
+  3_pre_led_seq  — before boot_led_sequence (3.2 s of LED blinks)
+  4_post_led_seq — after boot_led_sequence
+  5_pre_mount_sd — immediately before mount_sd_card()
+  6_post_mount_sd — immediately after mount_sd_card() returns
+
+This patch is debug-only and should be removed once SD bring-up is
+confirmed.
+---
+diff --git a/omi/firmware/devkit/src/main.c b/omi/firmware/devkit/src/main.c
+--- a/omi/firmware/devkit/src/main.c
++++ b/omi/firmware/devkit/src/main.c
+@@ -146,6 +146,7 @@ int main(void)
+     NRF_POWER->DCDCEN = 1;
+     NRF_POWER->DCDCEN0 = 1;
+
++    printk("WR_TRACE: 1_dcdc_done\n");
+     LOG_INF("Booting...\n");
+
+     LOG_INF("Model: %s", CONFIG_BT_DIS_MODEL);
+@@ -161,6 +162,7 @@ int main(void)
+     } else {
+         LOG_ERR("QSPI flash device not ready");
+     }
++    printk("WR_TRACE: 2_qspi_done\n");
+     LOG_PRINTK("\n");
+     LOG_INF("Initializing LEDs...\n");
+
+@@ -171,8 +173,10 @@ int main(void)
+         return err;
+     }
+
++    printk("WR_TRACE: 3_pre_led_seq\n");
+     // Run the boot LED sequence
+     boot_led_sequence();
++    printk("WR_TRACE: 4_post_led_seq\n");
+
+     // Initialize watchdog early to catch any freezes during boot
+     err = watchdog_init();
+@@ -231,7 +235,9 @@ int main(void)
+     LOG_PRINTK("\n");
+     LOG_INF("Mount SD card...\n");
+
++    printk("WR_TRACE: 5_pre_mount_sd\n");
+     err = mount_sd_card();
++    printk("WR_TRACE: 6_post_mount_sd err=%d\n", err);
+     if (err) {
+         /* Bring-up note 2026-04-30: SD card not detected on first
+          * hardware cut. Don't kill the boot path - log loudly and
