@@ -14,7 +14,7 @@ diff --git a/omi/firmware/devkit/overlay/xiao_ble_sense_devkitv1-spisd.overlay b
              status = "okay";
          };
 -        spi-max-frequency = <24000000>;  // 24 MHz SPI speed for SD card
-+        spi-max-frequency = <4000000>;  // patch 0017: 4 MHz for breadboard wiring
++        spi-max-frequency = <2000000>;  // patch 0017: 2 MHz for breadboard wiring
      };
  };
  &pinctrl {
