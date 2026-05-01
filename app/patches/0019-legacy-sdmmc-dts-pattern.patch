@@ -1,0 +1,29 @@
+diff --git a/omi/firmware/devkit/overlay/xiao_ble_sense_devkitv1-spisd.overlay b/omi/firmware/devkit/overlay/xiao_ble_sense_devkitv1-spisd.overlay
+index 1af28dd..8ad3e33 100644
+--- a/omi/firmware/devkit/overlay/xiao_ble_sense_devkitv1-spisd.overlay
++++ b/omi/firmware/devkit/overlay/xiao_ble_sense_devkitv1-spisd.overlay
+@@ -4,16 +4,16 @@
+     pinctrl-1 = <&custom_spi>;
+     pinctrl-names = "default", "sleep";
+     cs-gpios = <&gpio1 13 GPIO_ACTIVE_LOW>;  // patch 0018: CS on D8 = P1.13 (was P0.28)
+-    sdhc0: sdhc@0 {
+-        compatible = "zephyr,sdhc-spi-slot";
++    /* patch 0019: legacy DTS pattern. Replace the zephyr,sdhc-spi-slot
++     * wrapper with a direct zephyr,sdmmc-disk binding so the legacy
++     * DISK_DRIVER_SDMMC driver (already enabled in omi prj.conf) can
++     * actually claim the device. */
++    sdmmc@0 {
++        compatible = "zephyr,sdmmc-disk";
+         reg = <0>;
+         status = "okay";
+-        label = "SDHC_0";
+-        mmc {
+-            compatible = "zephyr,sdmmc-disk";
+-            status = "okay";
+-        };
+-        spi-max-frequency = <1000000>;  // patch 0017: lowered 24 MHz → 1 MHz for SD init reliability
++        spi-max-frequency = <1000000>;
++        disk-name = "SD";
+     };
+ };
+ &pinctrl {
