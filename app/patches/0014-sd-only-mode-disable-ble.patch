@@ -1,20 +1,15 @@
-From: knsol <noreply@anthropic.com>
-Subject: [PATCH] fix: SD-only mode — keep pusher thread, tolerate BLE init failure
+From 5b0f57b8037ce4f7944a972f457e8dd7ba0e29a2 Mon Sep 17 00:00:00 2001
+From: test <test@test.com>
+Date: Sat, 2 May 2026 06:36:29 +0900
+Subject: [PATCH] 0014-sd-only-mode-disable-ble
 
-Earlier version skipped transport_start() entirely. That also skipped
-the pusher thread creation at the bottom of transport_start(), which
-is the thread that drains the audio TX ring buffer and writes packets
-to SD via write_to_storage(). Result: SD mounts but no audio writes.
-
-New approach: keep the call to transport_start() in main.c, but change
-the error handling — non-zero return is logged as warning and main
-continues. transport.c itself is patched so bt_enable() failure no
-longer returns early; falls through to GATT service registration and
-the pusher thread creation. SD path now works even when BLE is dead.
-
-This patch must be applied AFTER 0001-0013.
 ---
+ omi/firmware/devkit/src/main.c      | 11 +----------
+ omi/firmware/devkit/src/transport.c |  6 +++---
+ 2 files changed, 4 insertions(+), 13 deletions(-)
+
 diff --git a/omi/firmware/devkit/src/main.c b/omi/firmware/devkit/src/main.c
+index 1ccc6d2..5631cfc 100644
 --- a/omi/firmware/devkit/src/main.c
 +++ b/omi/firmware/devkit/src/main.c
 @@ -290,16 +290,7 @@ int main(void)
@@ -33,9 +28,10 @@ diff --git a/omi/firmware/devkit/src/main.c b/omi/firmware/devkit/src/main.c
 -        return transportErr;
 +        LOG_WRN("transport_start non-zero (%d) — continuing in SD-only mode", transportErr);
      }
-
+ 
      /* Arm the Battery GATT Service 60 s polling workqueue. */
 diff --git a/omi/firmware/devkit/src/transport.c b/omi/firmware/devkit/src/transport.c
+index ae407aa..bed9545 100644
 --- a/omi/firmware/devkit/src/transport.c
 +++ b/omi/firmware/devkit/src/transport.c
 @@ -851,10 +851,10 @@ int transport_start()
@@ -49,6 +45,9 @@ diff --git a/omi/firmware/devkit/src/transport.c b/omi/firmware/devkit/src/trans
 +        LOG_INF("Transport bluetooth initialized");
      }
 -    LOG_INF("Transport bluetooth initialized");
-
+ 
      //  Enable button
  #ifdef CONFIG_OMI_ENABLE_BUTTON
+-- 
+2.53.0.windows.2
+
