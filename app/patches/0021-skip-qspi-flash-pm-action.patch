@@ -34,7 +34,7 @@ This patch must be applied AFTER 0020 (WR_TRACE checkpoints).
 diff --git a/omi/firmware/devkit/src/main.c b/omi/firmware/devkit/src/main.c
 --- a/omi/firmware/devkit/src/main.c
 +++ b/omi/firmware/devkit/src/main.c
-@@ -150,15 +150,8 @@ int main(void)
+@@ -150,16 +150,8 @@ int main(void)
      LOG_INF("Model: %s", CONFIG_BT_DIS_MODEL);
      LOG_INF("Firmware revision: %s", CONFIG_BT_DIS_FW_REV_STR);
      LOG_INF("Hardware revision: %s", CONFIG_BT_DIS_HW_REV_STR);
