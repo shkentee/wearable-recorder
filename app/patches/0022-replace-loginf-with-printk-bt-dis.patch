@@ -1,0 +1,41 @@
+From: knsol <noreply@anthropic.com>
+Subject: [PATCH] debug: replace BT DIS LOG_INF with printk to isolate hang
+
+Patch 0021 removed the QSPI flash deep-sleep block but main still
+hangs at the SAME spot — between WR_TRACE 1_dcdc_done (visible) and
+2_qspi_done (never appears). With the QSPI block gone, the only code
+between those two checkpoints is:
+
+    LOG_INF("Firmware revision: %s", CONFIG_BT_DIS_FW_REV_STR);
+    LOG_INF("Hardware revision: %s", CONFIG_BT_DIS_HW_REV_STR);
+
+CONFIG_BT was assigned 'y' but the BT_GATT_AUTO_UPDATE_MTU build
+warning showed BT_HCI_HOST or BT_GATT_CLIENT may not be satisfied,
+leaving the BT subsystem partially configured. CONFIG_BT_DIS_*_STR
+macros may resolve to NULL or some half-defined symbol, and the
+deferred-log machinery dereferences the %s arg either during arg
+copy or in the log thread.
+
+Swap to printk for these two lines and add fine-grained checkpoints
+on either side, so we can see exactly which call hangs.
+
+This is a debug patch; remove once the SD bring-up is solid.
+---
+diff --git a/omi/firmware/devkit/src/main.c b/omi/firmware/devkit/src/main.c
+--- a/omi/firmware/devkit/src/main.c
++++ b/omi/firmware/devkit/src/main.c
+@@ -147,9 +147,11 @@ int main(void)
+     printk("WR_TRACE: 1_dcdc_done\n");
+     LOG_INF("Booting...\n");
+
+-    LOG_INF("Model: %s", CONFIG_BT_DIS_MODEL);
+-    LOG_INF("Firmware revision: %s", CONFIG_BT_DIS_FW_REV_STR);
+-    LOG_INF("Hardware revision: %s", CONFIG_BT_DIS_HW_REV_STR);
++    printk("WR_TRACE: 1a_pre_model\n");
++    printk("WR_TRACE: 1b_model: %s\n", CONFIG_BT_DIS_MODEL);
++    printk("WR_TRACE: 1c_fw: %s\n", CONFIG_BT_DIS_FW_REV_STR);
++    printk("WR_TRACE: 1d_hw: %s\n", CONFIG_BT_DIS_HW_REV_STR);
++    printk("WR_TRACE: 1e_after_dis\n");
+     /* patch 0021: skipped — pm_device_action_run hangs main when
+      * SPI_NOR=n (deps unsatisfied in NCS v2.7). See patch header. */
+     printk("WR_TRACE: 2_qspi_done\n");
