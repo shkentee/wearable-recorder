@@ -1,0 +1,55 @@
+From: knsol <noreply@anthropic.com>
+Subject: [PATCH] fix: skip QSPI flash pm_device_action_run, hangs main
+
+WR_TRACE printk diagnostics from patch 0020 narrowed main's hang
+window to the block between
+  printk("WR_TRACE: 1_dcdc_done")   // visible in serial capture
+and
+  printk("WR_TRACE: 2_qspi_done")   // never appears
+
+The intervening code is the QSPI flash deep-sleep call:
+
+    const struct device *flash_dev = DEVICE_DT_GET(DT_NODELABEL(p25q16h));
+    if (device_is_ready(flash_dev)) {
+        err = pm_device_action_run(flash_dev, PM_DEVICE_ACTION_SUSPEND);
+        ...
+    } else {
+        LOG_ERR("QSPI flash device not ready");
+    }
+
+CONFIG_SPI_NOR was assigned 'y' in our overlay but unsatisfied deps in
+NCS v2.7 (FLASH && DT_HAS_JEDEC_SPI_NOR_ENABLED) leave it at 'n'.
+Without SPI_NOR, no driver binds to the p25q16h DT node. DEVICE_DT_GET
+still returns a non-null device pointer (statically generated), but
+device_is_ready() may spin or pm_device_action_run() may walk a
+half-initialised pm_device structure and lock up.
+
+Drop the QSPI deep-sleep path entirely. It is a power-saving nicety
+specific to the omi production hardware (where the QSPI flash is
+unused after boot). On DK1+SPISD with SD-only mode we run from USB,
+so skipping it is harmless.
+
+This patch must be applied AFTER 0020 (WR_TRACE checkpoints).
+---
+diff --git a/omi/firmware/devkit/src/main.c b/omi/firmware/devkit/src/main.c
+--- a/omi/firmware/devkit/src/main.c
++++ b/omi/firmware/devkit/src/main.c
+@@ -150,15 +150,8 @@ int main(void)
+     LOG_INF("Model: %s", CONFIG_BT_DIS_MODEL);
+     LOG_INF("Firmware revision: %s", CONFIG_BT_DIS_FW_REV_STR);
+     LOG_INF("Hardware revision: %s", CONFIG_BT_DIS_HW_REV_STR);
+-    // Force QSPI flash into deep sleep mode
+-    const struct device *flash_dev = DEVICE_DT_GET(DT_NODELABEL(p25q16h));
+-    if (device_is_ready(flash_dev)) {
+-        err = pm_device_action_run(flash_dev, PM_DEVICE_ACTION_SUSPEND);
+-        if (err) {
+-            LOG_ERR("Failed to suspend QSPI flash: %d", err);
+-        }
+-    } else {
+-        LOG_ERR("QSPI flash device not ready");
+-    }
++    /* patch 0021: skipped — pm_device_action_run hangs main when
++     * SPI_NOR=n (deps unsatisfied in NCS v2.7). See patch header. */
+     printk("WR_TRACE: 2_qspi_done\n");
+     LOG_PRINTK("\n");
+     LOG_INF("Initializing LEDs...\n");
