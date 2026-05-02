@@ -1,0 +1,78 @@
+From: knsol <noreply@anthropic.com>
+Subject: [PATCH] fix: bypass corrupted write_buffer + clamp offset lockout
+
+Patch 0035 diagnostics revealed the smoking gun:
+  write_to_storage calls : 255       ← pusher reaches the hot path
+  write_to_file calls    : 23        ← write_to_storage batched flushes
+  fs_open failures       : 23        ← every fs_open returned -EINVAL
+  fs_open last return    : -22       ← -EINVAL (Invalid argument)
+  write_to_storage stops : at 255    ← then locked out forever
+
+Two independent issues:
+
+  1. fs_open(write_buffer, ...) returns -EINVAL on every call. write_buffer
+     is a static char[MAX_PATH_LENGTH=32] populated by snprintf in
+     move_write_pointer() at boot. By the time write_to_file uses it,
+     it is corrupted/empty (likely overwritten by an aliasing static
+     write or never properly populated due to upstream errors). The
+     surgical fix: stop relying on write_buffer entirely and use a
+     hardcoded path string in write_to_file. We only ever write to
+     a01.txt anyway — wr_chunk does the rotation rename later.
+
+  2. The pusher() gate `file_num_array[1] < MAX_STORAGE_BYTES (0xFFFF0000)`
+     permanently disables write_to_storage when get_offset() returns
+     garbage (0xFFFFFFFF). get_offset() reads /SD:/info.txt — fails or
+     returns junk under transient errors. Clamp the value to 0 if it
+     ever exceeds MAX_STORAGE_BYTES so a one-off read failure can't
+     brick the recording path forever.
+
+Combined effect: SD writes finally land in a01.txt, file size grows,
+chunk rotation can fire, mobile_app.py pull works.
+---
+diff --git a/omi/firmware/devkit/src/sdcard.c b/omi/firmware/devkit/src/sdcard.c
+index b183480..4e14b8a 100644
+--- a/omi/firmware/devkit/src/sdcard.c
++++ b/omi/firmware/devkit/src/sdcard.c
+@@ -228,11 +228,17 @@ int write_to_file(uint8_t *data, uint32_t length)
+      * write. omi's initialize_audio_file has a use-after-free that
+      * leaves a01.txt missing after mount on this board, and FS_O_APPEND
+      * alone does not create. */
+     /* Patch 0035: counter for BLE-readable diagnostics. */
+     wtf_count++;
+-    int _open_ret = fs_open(&write_file, write_buffer, FS_O_WRITE | FS_O_APPEND | FS_O_CREATE);
++    /* Patch 0036: build path locally instead of relying on write_buffer
++     * being correctly populated at mount time. Diagnostics show fs_open
++     * returns -EINVAL on every call, which strongly suggests
++     * write_buffer is corrupted/empty by the time write_to_file is
++     * invoked. Hardcoded path removes the static-buffer dependency. */
++    const char *target_path = "/SD:/audio/a01.txt";
++    int _open_ret = fs_open(&write_file, target_path, FS_O_WRITE | FS_O_APPEND | FS_O_CREATE);
+     wtf_open_last_ret = _open_ret;
+     if (_open_ret) {
+         wtf_open_fail++;
+         return 0;
+     }
+diff --git a/omi/firmware/devkit/src/transport.c b/omi/firmware/devkit/src/transport.c
+index d55651e..3b83619 100644
+--- a/omi/firmware/devkit/src/transport.c
++++ b/omi/firmware/devkit/src/transport.c
+@@ -709,11 +709,18 @@ static bool use_storage = true;
+ static int recent_file_size_updated = 0;
+ static uint8_t heartbeat_count = 0;
+ void update_file_size()
+ {
+     file_num_array[0] = get_file_size(1);
+-    file_num_array[1] = get_offset();
++    /* Patch 0036: clamp offset to valid range. get_offset() can return
++     * 0xFFFFFFFF when info.txt read fails, which is >= MAX_STORAGE_BYTES
++     * (0xFFFF0000) and triggers the file_num_array[1]<MAX gate in
++     * pusher() — permanently disabling write_to_storage. Clamp so a
++     * transient read error doesn't cause permanent lockout. */
++    uint32_t off = get_offset();
++    if (off >= 0xFFFF0000) off = 0;
++    file_num_array[1] = off;
+     // LOG_PRINTK("file size for file count %d %d\n",file_count,file_num_array[0]);
+     // LOG_PRINTK("offset for file count %d %d\n",file_count,file_num_array[1]);
+ }
+ 
+ void pusher(void)
