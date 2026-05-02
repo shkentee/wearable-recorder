@@ -1,0 +1,65 @@
+From: knsol <noreply@anthropic.com>
+Subject: [PATCH] fix: don't kill SD writes whenever any BLE client is connected
+
+Found 2026-05-03 after patch 0031 (fs_sync) didn't fix the symptom of
+get_file_size("audio/a01.txt") == 0 forever during recording.
+
+Root cause is upstream of write_to_file: the pusher() loop in
+transport.c gates SD writes on `!storage_is_on`, but `storage_is_on`
+gets set to true on EVERY BLE connection — not only when a client is
+actively pulling files from the omi storage service.
+
+Two offending sites, both originally written for omi's mobile app
+which always reads storage:
+
+  1. transport.c:403 (_transport_connected): unconditional
+     `storage_is_on = true` on every BLE connect, regardless of
+     intent. mobile_app.py / nRF Connect / any test BLE client trips
+     this and kills SD writes for the entire connection lifetime.
+
+  2. storage.c:88 (storage_config_changed_handler): sets
+     `storage_is_on = true` BEFORE the if/else that distinguishes
+     subscribe vs unsubscribe — so even an unsubscribe sets it true.
+
+Fix:
+
+  - Remove the unconditional set in _transport_connected. The
+    disconnect callback already clears it.
+  - Make storage_config_changed_handler set `storage_is_on` to
+    `(value == BT_GATT_CCC_NOTIFY)` so it tracks subscription state
+    correctly.
+
+Effect: SD writes happen during ordinary BLE connections (live
+streaming, info read, etc.). They're only paused while a client is
+actually subscribed to the omi storage notify char, which is the
+intended behaviour for serving file downloads.
+---
+diff --git a/omi/firmware/devkit/src/transport.c b/omi/firmware/devkit/src/transport.c
+--- a/omi/firmware/devkit/src/transport.c
++++ b/omi/firmware/devkit/src/transport.c
+@@ -400,7 +400,11 @@ static void _transport_connected(struct bt_conn *conn, uint8_t err)
+ static void _transport_connected(struct bt_conn *conn, uint8_t err)
+ {
+     struct bt_conn_info info = {0};
+-    storage_is_on = true;
++    /* Patch 0032: do NOT force storage_is_on=true on every connect.
++     * That was killing SD writes for the entire connection lifetime
++     * even when the client never touched the storage service. The
++     * subscription state of the storage notify char is the correct
++     * signal; storage_config_changed_handler maintains that. */
+
+     err = bt_conn_get_info(conn, &info);
+     if (err) {
+diff --git a/omi/firmware/devkit/src/storage.c b/omi/firmware/devkit/src/storage.c
+--- a/omi/firmware/devkit/src/storage.c
++++ b/omi/firmware/devkit/src/storage.c
+@@ -85,7 +85,8 @@ static void storage_config_changed_handler(const struct bt_gatt_attr *attr, uint
+ static void storage_config_changed_handler(const struct bt_gatt_attr *attr, uint16_t value)
+ {
+
+-    storage_is_on = true;
++    /* Patch 0032: track subscribe vs unsubscribe accurately. */
++    storage_is_on = (value == BT_GATT_CCC_NOTIFY);
+     if (value == BT_GATT_CCC_NOTIFY) {
+         LOG_INF("Client subscribed for notifications");
+     } else if (value == 0) {
