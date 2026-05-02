@@ -1,0 +1,52 @@
+From: knsol <noreply@anthropic.com>
+Subject: [PATCH] fix: add FS_O_CREATE to write_to_file so a01.txt is created on first write
+
+After 90 s of fresh-boot idle (no BLE), file_num_array stays [0, 0],
+which means get_file_size("/SD:/audio/a01.txt") returns 0 — i.e. the
+file either doesn't exist or fs_stat fails. cmd24 writes do happen on
+the SPI bus (we saw 1 in 8 s), but they can't be writes to a01.txt if
+the file isn't there.
+
+Two omi bugs combine to leave a01.txt missing after mount:
+
+  1. initialize_audio_file (sdcard.c:228) has a use-after-free:
+
+         char *header = generate_new_audio_header(num);
+         if (header == NULL) return -1;
+         k_free(header);          /* freed here */
+         create_file(header);     /* read here -> UB */
+         return 0;
+
+     The freed memory may still contain "audio/a01.txt" or may already
+     hold the next allocator's payload. On this build/board the file
+     ends up not getting created.
+
+  2. write_to_file (sdcard.c:215) opens with FS_O_WRITE | FS_O_APPEND
+     but no FS_O_CREATE. Zephyr/FATFS does NOT create the file on this
+     flag combination — fs_open returns -ENOENT silently. Since
+     write_to_file ignores all return codes, every subsequent
+     fs_write/fs_close is a no-op on an uninitialized fs_file_t.
+
+Minimal fix: add FS_O_CREATE to write_to_file. The first time it
+runs, a01.txt is created if missing; thereafter APPEND extends it.
+This is safer than fixing initialize_audio_file's use-after-free —
+write_to_file is the actual hot path and we want it self-healing.
+---
+diff --git a/omi/firmware/devkit/src/sdcard.c b/omi/firmware/devkit/src/sdcard.c
+--- a/omi/firmware/devkit/src/sdcard.c
++++ b/omi/firmware/devkit/src/sdcard.c
+@@ -215,7 +215,11 @@ int write_to_file(uint8_t *data, uint32_t length)
+ int write_to_file(uint8_t *data, uint32_t length)
+ {
+     struct fs_file_t write_file;
+     fs_file_t_init(&write_file);
+     uint8_t *write_ptr = data;
+-    fs_open(&write_file, write_buffer, FS_O_WRITE | FS_O_APPEND);
++    /* Patch 0034: add FS_O_CREATE so the file is created on first
++     * write. omi's initialize_audio_file has a use-after-free that
++     * leaves a01.txt missing after mount on this board, and FS_O_APPEND
++     * alone does not create. */
++    fs_open(&write_file, write_buffer, FS_O_WRITE | FS_O_APPEND | FS_O_CREATE);
+     fs_write(&write_file, write_ptr, length);
+     fs_sync(&write_file);
+     fs_close(&write_file);
