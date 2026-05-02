@@ -12,12 +12,12 @@ actively pulling files from the omi storage service.
 Two offending sites, both originally written for omi's mobile app
 which always reads storage:
 
-  1. transport.c:403 (_transport_connected): unconditional
-     `storage_is_on = true` on every BLE connect, regardless of
-     intent. mobile_app.py / nRF Connect / any test BLE client trips
-     this and kills SD writes for the entire connection lifetime.
+  1. transport.c: unconditional `storage_is_on = true` on every BLE
+     connect, regardless of intent. mobile_app.py / nRF Connect / any
+     test BLE client trips this and kills SD writes for the entire
+     connection lifetime.
 
-  2. storage.c:88 (storage_config_changed_handler): sets
+  2. storage.c (storage_config_changed_handler): sets
      `storage_is_on = true` BEFORE the if/else that distinguishes
      subscribe vs unsubscribe — so even an unsubscribe sets it true.
 
@@ -48,8 +48,8 @@ diff --git a/omi/firmware/devkit/src/transport.c b/omi/firmware/devkit/src/trans
 +     * subscription state of the storage notify char is the correct
 +     * signal; storage_config_changed_handler maintains that. */
 
+     LOG_INF("Transport _connected callback entered, err=0x%02x", err);
      err = bt_conn_get_info(conn, &info);
-     if (err) {
 diff --git a/omi/firmware/devkit/src/storage.c b/omi/firmware/devkit/src/storage.c
 --- a/omi/firmware/devkit/src/storage.c
 +++ b/omi/firmware/devkit/src/storage.c
