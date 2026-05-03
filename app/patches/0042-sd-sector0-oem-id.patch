@@ -1,0 +1,111 @@
+From: knsol <noreply@anthropic.com>
+Subject: [PATCH] debug: read SD sector 0 OEM ID, expose via BLE
+
+User pushback: 128 GB SDXC defaults to exFAT, but Zephyr FATFS may
+silently misinterpret it despite CONFIG_FS_FATFS_EXFAT=y. Need
+authoritative answer of what filesystem is on the card.
+
+Read sector 0 raw via disk_access_read at boot (before fs_mount), and
+capture bytes 3..10 (the OEM ID / FS signature). exFAT cards have
+"EXFAT   " here; FAT32 has "MSDOS5.0", "MSWIN4.1", "mkfs.fat", etc.
+
+Expose as 8 bytes appended to the omi storage read characteristic
+payload (now 40 bytes total). mobile_app.py omi-info will show it.
+---
+diff --git a/omi/firmware/devkit/src/sdcard.c b/omi/firmware/devkit/src/sdcard.c
+index 9107c6d..31fb446 100644
+--- a/omi/firmware/devkit/src/sdcard.c
++++ b/omi/firmware/devkit/src/sdcard.c
+@@ -1,7 +1,8 @@
+ #include "sdcard.h"
+ 
++#include <string.h>
+ #include <ff.h>
+ #include <zephyr/device.h>
+ #include <zephyr/drivers/gpio.h>
+ #include <zephyr/fs/fs.h>
+ #include <zephyr/fs/fs_sys.h>
+@@ -38,10 +39,17 @@ uint32_t wtf_count = 0;
+ uint32_t wtf_open_fail = 0;
+ int32_t  wtf_open_last_ret = 0;
+ uint32_t wtf_write_fail = 0;
+ uint32_t wtf_close_fail = 0;
+ 
++/* Patch 0042: first 8 bytes of sector 0's OEM ID, exposed via BLE.
++ * exFAT cards have "EXFAT   " (offset 3-10), FAT32 has "MSDOS5.0",
++ * "MSWIN4.1", "mkfs.fat", or similar. Read at boot from raw disk
++ * before mount so FS interpretation can't disturb the value. */
++uint32_t sd_oem_id_lo = 0;  /* first 4 bytes of OEM ID (offset 3) */
++uint32_t sd_oem_id_hi = 0;  /* next 4 bytes (offset 7) */
++
+ static const char *disk_mount_pt = "/SD:/";
+ 
+ bool sd_enabled = false;
+ 
+ int mount_sd_card(void)
+@@ -71,10 +79,26 @@ int mount_sd_card(void)
+             LOG_ERR("disk_access_init failed");
+             return -1;
+         }
+     }
+ 
++    /* Patch 0042: read sector 0 raw and capture OEM ID bytes for BLE
++     * diagnostic. Tells us authoritatively whether the card has FAT32,
++     * exFAT, or something else, without depending on FATFS mount. */
++    {
++        static uint8_t sec0[512];
++        int rd = disk_access_read(disk_pdrv, sec0, 0, 1);
++        LOG_INF("sector0 read = %d", rd);
++        if (rd == 0) {
++            /* OEM ID is at bytes 3..10 in the boot sector. */
++            memcpy(&sd_oem_id_lo, sec0 + 3, 4);
++            memcpy(&sd_oem_id_hi, sec0 + 7, 4);
++            LOG_INF("sector0 OEM ID lo=%08x hi=%08x", sd_oem_id_lo, sd_oem_id_hi);
++        }
++    }
++
++
+     mount_point.mnt_point = "/SD:";
+     int res = fs_mount(&mount_point);
+     if (res == FR_OK) {
+         LOG_INF("SD card mounted successfully");
+     } else {
+diff --git a/omi/firmware/devkit/src/storage.c b/omi/firmware/devkit/src/storage.c
+index 3051e08..0a194a8 100644
+--- a/omi/firmware/devkit/src/storage.c
++++ b/omi/firmware/devkit/src/storage.c
+@@ -101,27 +101,31 @@ static ssize_t storage_read_characteristic(struct bt_conn *conn,
+                                            void *buf,
+                                            uint16_t len,
+                                            uint16_t offset)
+ {
+     k_msleep(10);
+-    /* Patch 0035: extended 32-byte diagnostic payload. */
++    /* Patch 0035 + 0042: 40-byte diagnostic payload. */
+     extern uint32_t wts_count;
+     extern uint32_t wtf_count;
+     extern uint32_t wtf_open_fail;
+     extern int32_t  wtf_open_last_ret;
+     extern uint32_t wtf_write_fail;
+     extern uint32_t wtf_close_fail;
+-    uint32_t amount[8];
++    extern uint32_t sd_oem_id_lo;
++    extern uint32_t sd_oem_id_hi;
++    uint32_t amount[10];
+     amount[0] = file_num_array[0];
+     amount[1] = file_num_array[1];
+     amount[2] = wts_count;
+     amount[3] = wtf_count;
+     amount[4] = wtf_open_fail;
+     amount[5] = (uint32_t)wtf_open_last_ret;
+     amount[6] = wtf_write_fail;
+     amount[7] = wtf_close_fail;
+-    ssize_t result = bt_gatt_attr_read(conn, attr, buf, len, offset, amount, 8 * sizeof(uint32_t));
++    amount[8] = sd_oem_id_lo;
++    amount[9] = sd_oem_id_hi;
++    ssize_t result = bt_gatt_attr_read(conn, attr, buf, len, offset, amount, 10 * sizeof(uint32_t));
+     return result;
+ }
+ 
+ uint8_t transport_started = 0;
+ 
