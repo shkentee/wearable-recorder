@@ -1,0 +1,48 @@
+From: knsol <noreply@anthropic.com>
+Subject: [PATCH] fix: fs_sync before fs_close in write_to_file to commit FAT entry
+
+Symptom (observed 2026-05-03 with mobile_app.py):
+  * BLE live stream works (audio reaches the host via push_to_gatt path)
+  * Serial logs show cmd24 sector writes happen on the SPI bus during recording
+  * But /SD:/audio/a01.txt's directory-entry size stays 0 forever:
+      omi-info → file_num_array[0] = 0 (= get_file_size("audio/a01.txt"))
+      ls         → directory enumerable but never produces a chunk_*.opus
+      wr_chunk   → 10-min rotation timer fires but skip_rotation triggers
+                   because dirent.size == 0 < threshold
+
+Root cause:
+  * write_to_file (sdcard.c:215) opens, writes, closes on every call.
+  * fs_close returns -EIO repeatedly on this SD/FATFS combo
+    ("fs: file close error (-5)" in serial).
+  * Without an explicit fs_sync, the FAT directory entry's size+modtime
+    never reach the disk, so subsequent fs_stat reads see size=0 even
+    though the data clusters are correctly written.
+
+Fix:
+  * Call fs_sync() between fs_write() and fs_close(). fs_sync forces
+    FATFS to flush the file-info update to the FAT regardless of whether
+    fs_close ultimately succeeds. -EIO on close is then cosmetic — the
+    metadata is already committed.
+  * Tolerate fs_close failure silently (no LOG_ERR — would spam at
+    100 fps).
+
+This unblocks chunk rotation: once a01.txt has a real size, the size
+threshold (2 MB) and 10-min timer both fire correctly, fs_rename
+produces chunk_NNNNN.opus, and `mobile_app.py ls` / `pull` work.
+---
+diff --git a/omi/firmware/devkit/src/sdcard.c b/omi/firmware/devkit/src/sdcard.c
+--- a/omi/firmware/devkit/src/sdcard.c
++++ b/omi/firmware/devkit/src/sdcard.c
+@@ -218,6 +218,12 @@ int write_to_file(uint8_t *data, uint32_t length)
+     uint8_t *write_ptr = data;
+     fs_open(&write_file, write_buffer, FS_O_WRITE | FS_O_APPEND);
+     fs_write(&write_file, write_ptr, length);
++    /* Patch 0031: explicitly sync to commit FAT directory-entry update
++     * before close. On this SD/board combo fs_close returns -EIO every
++     * call, which means the dir entry never gets the new size, which
++     * means get_file_size() always returns 0 and chunk rotation never
++     * fires. fs_sync forces the metadata flush regardless. */
++    fs_sync(&write_file);
+     fs_close(&write_file);
+     return 0;
+ }

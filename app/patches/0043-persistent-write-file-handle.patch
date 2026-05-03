@@ -1,0 +1,114 @@
+From: knsol <noreply@anthropic.com>
+Subject: [PATCH] fix: persistent file handle in write_to_file (skip close churn)
+
+Patch 0042 BLE diagnostics confirmed:
+  - card is exFAT (sector 0 OEM ID = "EXFAT   ")
+  - fs_open / fs_write succeed 100% (0 failures)
+  - fs_close fails ~42% with -EIO
+  - data is being written to disk but dir entry size update is
+    mid-committed, so fs_stat returns 0 sometimes / live size sometimes
+
+Root cause is the open/write/close churn at ~5 Hz: every close has
+chance to fail with -EIO and lose the dir entry update. The simpler
+fix: open once, write many, sync periodically. fs_sync commits the
+dir entry without going through close.
+
+This is more correct than reformatting the SD: it works on both
+exFAT and FAT32, and doesn't depend on the SD card's particular FAT
+implementation tolerating high-frequency open/close cycles.
+---
+diff --git a/omi/firmware/devkit/src/sdcard.c b/omi/firmware/devkit/src/sdcard.c
+index 31fb446..9fa1f18 100644
+--- a/omi/firmware/devkit/src/sdcard.c
++++ b/omi/firmware/devkit/src/sdcard.c
+@@ -266,55 +266,50 @@ int read_audio_data(uint8_t *buf, int amount, int offset)
+     fs_close(&read_file);
+ 
+     return rc;
+ }
+ 
++/* Patch 0043: persistent file handle. omi's original write_to_file did
++ * fs_open + fs_write + fs_close on EVERY call (~5 fps under 32 kbps
++ * Opus). Each fs_close had ~42% chance of -EIO on this exFAT card
++ * leaving the dir entry mid-update. Solution: open once, write many,
++ * sync periodically, close only on shutdown. */
++static struct fs_file_t persistent_write_file;
++static bool persistent_open = false;
++static uint32_t writes_since_sync = 0;
++#define WRITE_TO_FILE_TARGET   "/SD:/a01.txt"
++#define WRITES_PER_SYNC        100  /* commit dir entry every ~100 writes */
++
+ int write_to_file(uint8_t *data, uint32_t length)
+ {
+-    struct fs_file_t write_file;
+-    fs_file_t_init(&write_file);
+-    uint8_t *write_ptr = data;
+-    /* Patch 0034: add FS_O_CREATE so the file is created on first
+-     * write. omi's initialize_audio_file has a use-after-free that
+-     * leaves a01.txt missing after mount on this board, and FS_O_APPEND
+-     * alone does not create. */
+-    /* Patch 0035: counter for BLE-readable diagnostics. */
+     wtf_count++;
+-    /* Patch 0036: build path locally instead of relying on write_buffer
+-     * being correctly populated at mount time. Diagnostics show fs_open
+-     * returns -EINVAL on every call, which strongly suggests
+-     * write_buffer is corrupted/empty by the time write_to_file is
+-     * invoked. Hardcoded path removes the static-buffer dependency. */
+-    /* Patch 0038: try root-level path. fs_open returned -ENOENT for
+-     * /SD:/audio/a01.txt with FS_O_WRITE | FS_O_CREATE even though
+-     * mount_sd_card claims /SD:/audio exists (mkdir returned EEXIST).
+-     * Suspect the directory isn't properly accessible; skip the
+-     * subdirectory entirely. wr_chunk's rotation logic uses absolute
+-     * paths so dropping the subdir doesn't break it. */
+-    const char *target_path = "/SD:/a01.txt";
+-    /* Patch 0037: drop FS_O_APPEND. With FS_O_WRITE | FS_O_APPEND |
+-     * FS_O_CREATE Zephyr/FATFS returns -ENOENT here even though the
+-     * parent dir exists. Same flags minus APPEND work fine for
+-     * info.txt at boot. Use them and seek to end manually. */
+-    int _open_ret = fs_open(&write_file, target_path, FS_O_WRITE | FS_O_CREATE);
+-    wtf_open_last_ret = _open_ret;
+-    if (_open_ret) {
+-        wtf_open_fail++;
++    if (!persistent_open) {
++        fs_file_t_init(&persistent_write_file);
++        int r = fs_open(&persistent_write_file, WRITE_TO_FILE_TARGET,
++                        FS_O_WRITE | FS_O_CREATE);
++        wtf_open_last_ret = r;
++        if (r != 0) {
++            wtf_open_fail++;
++            return 0;
++        }
++        fs_seek(&persistent_write_file, 0, FS_SEEK_END);
++        persistent_open = true;
++    }
++    int _wr = fs_write(&persistent_write_file, data, length);
++    if (_wr < 0) {
++        wtf_write_fail++;
++        /* Try to recover by closing and reopening on next call. */
++        fs_close(&persistent_write_file);
++        persistent_open = false;
+         return 0;
+     }
+-    /* Seek to end so writes append. */
+-    fs_seek(&write_file, 0, FS_SEEK_END);
+-    int _wr = fs_write(&write_file, write_ptr, length);
+-    if (_wr < 0) wtf_write_fail++;
+-    /* Patch 0031: explicitly sync to commit FAT directory-entry update
+-     * before close. On this SD/board combo fs_close returns -EIO every
+-     * call, which means the dir entry never gets the new size, which
+-     * means get_file_size() always returns 0 and chunk rotation never
+-     * fires. fs_sync forces the metadata flush regardless. */
+-    fs_sync(&write_file);
+-    int _cr = fs_close(&write_file);
+-    if (_cr) wtf_close_fail++;
++    writes_since_sync++;
++    if (writes_since_sync >= WRITES_PER_SYNC) {
++        int s = fs_sync(&persistent_write_file);
++        if (s) wtf_close_fail++;  /* reuse close-fail counter for sync fails */
++        writes_since_sync = 0;
++    }
+     return 0;
+ }
+ 
+ int initialize_audio_file(uint8_t num)
+ {

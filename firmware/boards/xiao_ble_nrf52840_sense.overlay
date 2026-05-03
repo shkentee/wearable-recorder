@@ -1,0 +1,13 @@
+/*
+ * Wearable Recorder — XIAO BLE Sense board overlay (bring-up profile).
+ *
+ * For now this only ensures USB CDC ACM is available as the console.
+ * SPI SD wiring, PDM mic, and PTT button are added in later tasks.
+ */
+
+/ {
+	chosen {
+		/* Default console / shell already point to usb_cdc_acm_uart in
+		 * xiao_ble_common.dtsi; keep that mapping. */
+	};
+};

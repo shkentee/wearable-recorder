@@ -1,0 +1,32 @@
+diff --git a/omi/firmware/devkit/src/main.c b/omi/firmware/devkit/src/main.c
+index 7679e1d..f1832d8 100644
+--- a/omi/firmware/devkit/src/main.c
++++ b/omi/firmware/devkit/src/main.c
+@@ -28,7 +28,9 @@ static void codec_handler(uint8_t *data, size_t len)
+ {
+     int err = broadcast_audio_packets(data, len);
+     if (err) {
+-        LOG_ERR("Failed to broadcast audio packets: %d", err);
++        /* Bring-up debug 2026-04-30: at 50 fps audio with no consumer
++         * this fires every frame and floods CDC ACM. Demote to LOG_DBG. */
++        LOG_DBG("broadcast_audio_packets dropped: %d", err);
+     }
+ }
+ 
+diff --git a/omi/firmware/devkit/src/transport.c b/omi/firmware/devkit/src/transport.c
+index b970ce2..d3ee60b 100644
+--- a/omi/firmware/devkit/src/transport.c
++++ b/omi/firmware/devkit/src/transport.c
+@@ -914,7 +914,11 @@ int broadcast_audio_packets(uint8_t *buffer, size_t size)
+     }
+ 
+     if (retry_count >= max_retries) {
+-        LOG_ERR("Failed to write to tx queue after %d retries", max_retries);
++        /* Bring-up debug 2026-04-30: this fires every audio frame (~50 fps)
++         * when there is no consumer (no BLE conn, no SD on) so the queue
++         * stays full. The log storm starves CDC ACM / log workers and
++         * ultimately misses watchdog_feed. Demote to LOG_DBG. */
++        LOG_DBG("write_to_tx_queue failed after %d retries", max_retries);
+         return -1;
+     }
+ 

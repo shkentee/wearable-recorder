@@ -1,0 +1,53 @@
+From 5b0f57b8037ce4f7944a972f457e8dd7ba0e29a2 Mon Sep 17 00:00:00 2001
+From: test <test@test.com>
+Date: Sat, 2 May 2026 06:36:29 +0900
+Subject: [PATCH] 0014-sd-only-mode-disable-ble
+
+---
+ omi/firmware/devkit/src/main.c      | 11 +----------
+ omi/firmware/devkit/src/transport.c |  6 +++---
+ 2 files changed, 4 insertions(+), 13 deletions(-)
+
+diff --git a/omi/firmware/devkit/src/main.c b/omi/firmware/devkit/src/main.c
+index 1ccc6d2..5631cfc 100644
+--- a/omi/firmware/devkit/src/main.c
++++ b/omi/firmware/devkit/src/main.c
+@@ -290,16 +290,7 @@ int main(void)
+     int transportErr;
+     transportErr = transport_start();
+     if (transportErr) {
+-        LOG_ERR("Failed to start transport (err %d)", transportErr);
+-        // TODO: Detect the current core is app core or net core
+-        // Blink green LED to indicate error
+-        for (int i = 0; i < 5; i++) {
+-            set_led_green(!gpio_pin_get_dt(&led_green));
+-            k_msleep(200);
+-        }
+-        set_led_green(false);
+-
+-        return transportErr;
++        LOG_WRN("transport_start non-zero (%d) — continuing in SD-only mode", transportErr);
+     }
+ 
+     /* Arm the Battery GATT Service 60 s polling workqueue. */
+diff --git a/omi/firmware/devkit/src/transport.c b/omi/firmware/devkit/src/transport.c
+index ae407aa..bed9545 100644
+--- a/omi/firmware/devkit/src/transport.c
++++ b/omi/firmware/devkit/src/transport.c
+@@ -851,10 +851,10 @@ int transport_start()
+     // Enable Bluetooth
+     int err = bt_enable(NULL);
+     if (err) {
+-        LOG_ERR("Transport bluetooth init failed (err %d)", err);
+-        return err;
++        LOG_WRN("Transport bluetooth init failed (err %d) — SD-only mode continuing", err);
++    } else {
++        LOG_INF("Transport bluetooth initialized");
+     }
+-    LOG_INF("Transport bluetooth initialized");
+ 
+     //  Enable button
+ #ifdef CONFIG_OMI_ENABLE_BUTTON
+-- 
+2.53.0.windows.2
+

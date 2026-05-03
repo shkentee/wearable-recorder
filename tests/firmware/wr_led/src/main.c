@@ -118,16 +118,20 @@ ZTEST(wr_led_pick, test_ble_only_green_hb)
 	ASSERT_RGB(wr_led_pick(s, 50),  false, true,  false);
 }
 
-ZTEST(wr_led_pick, test_recording_only_white_hb)
+ZTEST(wr_led_pick, test_recording_only_green_pulse)
 {
 	struct wr_led_state s = {
 		.batt_pct = 80,
 		.recording = true,
 		.ble_connected = false,
 	};
-	ASSERT_RGB(wr_led_pick(s, 0),  true,  true,  true);
-	ASSERT_RGB(wr_led_pick(s, 1),  false, false, false);
-	ASSERT_RGB(wr_led_pick(s, 50), true,  true,  true);
+	/* SD-only mode: green pulse_on = (tick % 30) < 2.
+	 * Ticks 0, 1: green ON. Ticks 2-29: OFF. Tick 30: green ON again. */
+	ASSERT_RGB(wr_led_pick(s, 0),  false, true,  false);
+	ASSERT_RGB(wr_led_pick(s, 1),  false, true,  false);
+	ASSERT_RGB(wr_led_pick(s, 2),  false, false, false);
+	ASSERT_RGB(wr_led_pick(s, 29), false, false, false);
+	ASSERT_RGB(wr_led_pick(s, 30), false, true,  false);
 }
 
 ZTEST(wr_led_pick, test_ble_and_recording_alternates_per_5s)

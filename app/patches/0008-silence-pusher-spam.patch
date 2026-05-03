@@ -1,0 +1,34 @@
+diff --git a/omi/firmware/devkit/src/transport.c b/omi/firmware/devkit/src/transport.c
+index cf5decd..b970ce2 100644
+--- a/omi/firmware/devkit/src/transport.c
++++ b/omi/firmware/devkit/src/transport.c
+@@ -531,7 +531,16 @@ static bool read_from_tx_queue()
+                      tx_buffer,
+                      (CODEC_OUTPUT_MAX_BYTES + RING_BUFFER_HEADER_SIZE)); // It always fits completely or not at all
+     if (tx_buffer_size != (CODEC_OUTPUT_MAX_BYTES + RING_BUFFER_HEADER_SIZE)) {
+-        LOG_ERR("Failed to read from ring buffer. not enough data %d", tx_buffer_size);
++        /* Bring-up debug 2026-04-30: this fires every iteration of the
++         * pusher loop when the ring buffer is short of one full packet,
++         * which is the *normal* idle case. The original LOG_ERR generated
++         * thousands of CDC ACM log writes per second under the busy
++         * pusher loop, eventually stalling the log/USB worker threads
++         * long enough for main's watchdog_feed cycle to be missed and
++         * the 30 s WDT to reset the device on every BLE CONNECT attempt.
++         * Demote to LOG_DBG so it stays available for explicit debugging
++         * but does not fire on the default INFO log level. */
++        LOG_DBG("read_from_tx_queue: not enough data %d", tx_buffer_size);
+         return false;
+     }
+ 
+@@ -771,7 +780,10 @@ void pusher(void)
+          * CONNECT. Replace the bare yield with a tiny msleep so this
+          * worker actually gives the BT stack timing budget for connection
+          * setup, MTU exchange, and gatt callbacks. */
+-        k_msleep(2);
++        /* See 0007 — bumped from 2 ms to 20 ms after 0008 silence
++         * patch confirmed the LOG_ERR storm was the dominant CPU hog
++         * during BLE connect; 20 ms is plenty for audio (50 fps). */
++        k_msleep(20);
+     }
+ }
+ extern struct bt_gatt_service storage_service;

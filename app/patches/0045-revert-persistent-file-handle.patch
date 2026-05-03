@@ -1,0 +1,80 @@
+From: knsol <noreply@anthropic.com>
+Subject: [PATCH] fix: revert patch 0043 persistent file handle (broke reboot stability)
+
+Patch 0043 replaced omi's open/write/sync/close-each-call pattern with
+a persistent open + sync-every-100 pattern. fs_sync flushes data sectors
+but does NOT fully commit the exFAT dir entry size field. Without close,
+the dir entry stays half-committed; after a reboot fs_open(O_CREATE)
+permanently returns -ENOENT. The 42% fs_close -EIO from omi's original
+pattern is annoying but the FS stays consistent across reboots.
+---
+--- a/omi/firmware/devkit/src/sdcard.c
++++ b/omi/firmware/devkit/src/sdcard.c
+@@ -250,46 +250,32 @@
+     return rc;
+ }
+ 
+-/* Patch 0043: persistent file handle. omi's original write_to_file did
+- * fs_open + fs_write + fs_close on EVERY call (~5 fps under 32 kbps
+- * Opus). Each fs_close had ~42% chance of -EIO on this exFAT card
+- * leaving the dir entry mid-update. Solution: open once, write many,
+- * sync periodically, close only on shutdown. */
+-static struct fs_file_t persistent_write_file;
+-static bool persistent_open = false;
+-static uint32_t writes_since_sync = 0;
+-#define WRITE_TO_FILE_TARGET   "/SD:/a01.txt"
+-#define WRITES_PER_SYNC        100  /* commit dir entry every ~100 writes */
+-
++/* Patch 0045: revert 0043 persistent file handle. The persistent open
++ * pattern broke exFAT dir entry consistency across reboots. fs_sync
++ * flushes data sectors but does NOT fully commit the dir entry size,
++ * so after any reboot fs_open(O_CREATE) starts returning -ENOENT
++ * permanently. Restore omi's original open/write/sync/close-each-call
++ * pattern (worked through patch 0042). The 42% fs_close -EIO rate is
++ * tolerable; data + dir entry are properly committed before the next
++ * call so the FS stays consistent across reboots. */
+ int write_to_file(uint8_t *data, uint32_t length)
+ {
+     wtf_count++;
+-    if (!persistent_open) {
+-        fs_file_t_init(&persistent_write_file);
+-        int r = fs_open(&persistent_write_file, WRITE_TO_FILE_TARGET,
+-                        FS_O_WRITE | FS_O_CREATE);
+-        wtf_open_last_ret = r;
+-        if (r != 0) {
+-            wtf_open_fail++;
+-            return 0;
+-        }
+-        fs_seek(&persistent_write_file, 0, FS_SEEK_END);
+-        persistent_open = true;
+-    }
+-    int _wr = fs_write(&persistent_write_file, data, length);
+-    if (_wr < 0) {
+-        wtf_write_fail++;
+-        /* Try to recover by closing and reopening on next call. */
+-        fs_close(&persistent_write_file);
+-        persistent_open = false;
++    struct fs_file_t write_file;
++    fs_file_t_init(&write_file);
++    const char *target_path = "/SD:/a01.txt";
++    int _open_ret = fs_open(&write_file, target_path, FS_O_WRITE | FS_O_CREATE);
++    wtf_open_last_ret = _open_ret;
++    if (_open_ret) {
++        wtf_open_fail++;
+         return 0;
+     }
+-    writes_since_sync++;
+-    if (writes_since_sync >= WRITES_PER_SYNC) {
+-        int s = fs_sync(&persistent_write_file);
+-        if (s) wtf_close_fail++;  /* reuse close-fail counter for sync fails */
+-        writes_since_sync = 0;
+-    }
++    fs_seek(&write_file, 0, FS_SEEK_END);
++    int _wr = fs_write(&write_file, data, length);
++    if (_wr < 0) wtf_write_fail++;
++    fs_sync(&write_file);
++    int _cr = fs_close(&write_file);
++    if (_cr) wtf_close_fail++;
+     return 0;
+ }
+ 

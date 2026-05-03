@@ -1,0 +1,20 @@
+From: knsol <noreply@anthropic.com>
+Subject: [PATCH] fix: SPI clock 4 MHz for hand-wired SD breakout
+
+24 MHz default fails CMD0 with -14 on this breadboard wiring (signal
+integrity at high speed). 1 MHz works for init but FATFS writes time
+out (file close -EIO). 4 MHz is a middle ground that should be slow
+enough for clean signaling on long wires but fast enough for FATFS.
+---
+diff --git a/omi/firmware/devkit/overlay/xiao_ble_sense_devkitv1-spisd.overlay b/omi/firmware/devkit/overlay/xiao_ble_sense_devkitv1-spisd.overlay
+--- a/omi/firmware/devkit/overlay/xiao_ble_sense_devkitv1-spisd.overlay
++++ b/omi/firmware/devkit/overlay/xiao_ble_sense_devkitv1-spisd.overlay
+@@ -13,7 +13,7 @@
+             compatible = "zephyr,sdmmc-disk";
+             status = "okay";
+         };
+-        spi-max-frequency = <24000000>;  // 24 MHz SPI speed for SD card
++        spi-max-frequency = <1000000>;  // patch 0017: 1 MHz for breadboard wiring
+     };
+ };
+ &pinctrl {

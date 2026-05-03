@@ -1,0 +1,30 @@
+diff --git a/omi/firmware/devkit/src/main.c b/omi/firmware/devkit/src/main.c
+index 7b72550..1ccc6d2 100644
+--- a/omi/firmware/devkit/src/main.c
++++ b/omi/firmware/devkit/src/main.c
+@@ -390,9 +390,7 @@ int main(void)
+         while (1) {
+             watchdog_feed();
+             main_loop_count++;
+-            if ((main_loop_count % 10) == 0) {
+-                LOG_INF("main heartbeat: %u (5 s)", main_loop_count);
+-            }
++            /* No LOG_INF here — see 0011 commit message. */
+             set_led_state();
+             k_msleep(500);
+         }
+diff --git a/omi/firmware/devkit/src/transport.c b/omi/firmware/devkit/src/transport.c
+index 693d516..ae407aa 100644
+--- a/omi/firmware/devkit/src/transport.c
++++ b/omi/firmware/devkit/src/transport.c
+@@ -787,9 +787,7 @@ void pusher(void)
+         watchdog_feed();
+         static uint32_t pusher_loop_count = 0;
+         pusher_loop_count++;
+-        if ((pusher_loop_count % 250) == 0) {
+-            LOG_INF("pusher heartbeat: %u (5 s)", pusher_loop_count);
+-        }
++        /* No LOG_INF here — see 0011 commit message. */
+         k_msleep(20);
+     }
+ }

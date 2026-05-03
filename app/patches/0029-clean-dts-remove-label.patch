@@ -1,0 +1,23 @@
+From: knsol <noreply@anthropic.com>
+Subject: [PATCH] fix: remove deprecated label from sdhc-spi-slot node
+
+NCS 2.7 / Zephyr 3.6 deprecates the `label` DT property. The omi
+overlay still has `label = "SDHC_0"` on sdhc@0, which can silently
+break binding matching. Build evidence: only subsys/disk/disk_access.c
+compiles; sdhc_spi.c / sdmmc_subsys.c / sd.c don't build at all,
+which is why disk_access_init('SD') returns -EINVAL (no disk
+registered).
+
+Drop the label. Let the binding match by `compatible` alone.
+---
+diff --git a/omi/firmware/devkit/overlay/xiao_ble_sense_devkitv1-spisd.overlay b/omi/firmware/devkit/overlay/xiao_ble_sense_devkitv1-spisd.overlay
+--- a/omi/firmware/devkit/overlay/xiao_ble_sense_devkitv1-spisd.overlay
++++ b/omi/firmware/devkit/overlay/xiao_ble_sense_devkitv1-spisd.overlay
+@@ -8,7 +8,6 @@
+         compatible = "zephyr,sdhc-spi-slot";
+         reg = <0>;
+         status = "okay";
+-        label = "SDHC_0";
+         mmc {
+             compatible = "zephyr,sdmmc-disk";
+             status = "okay";

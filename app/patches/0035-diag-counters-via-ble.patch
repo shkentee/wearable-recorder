@@ -1,0 +1,144 @@
+From: knsol <noreply@anthropic.com>
+Subject: [PATCH] debug: expose write_to_storage / fs_open counters via BLE
+
+CDC ACM dies ~4 s after boot on this board (BLE softdevice contention),
+so the LOG_INF instrumentation in patch 0033 never reaches the host.
+Bypass CDC entirely by extending the omi storage read characteristic
+(30295782) to return 32 bytes instead of 8:
+
+  bytes  0..7  : file_num_array[2]   (existing, backward compatible)
+  bytes  8..11 : wts_count           (write_to_storage call count)
+  bytes 12..15 : wtf_count           (write_to_file call count)
+  bytes 16..19 : wtf_open_fail       (fs_open failure count)
+  bytes 20..23 : wtf_open_last_ret   (last fs_open return code; signed)
+  bytes 24..27 : wtf_write_fail      (fs_write < 0 count)
+  bytes 28..31 : wtf_close_fail      (fs_close non-zero count)
+
+Counters in transport.c (wts_count) and sdcard.c (wtf_*) as
+file-scope uint32_t. Read via mobile_app.py omi-info to get definitive
+data on whether write_to_file is being called and which fs_* call is
+failing — without depending on CDC.
+---
+diff --git a/omi/firmware/devkit/src/sdcard.c b/omi/firmware/devkit/src/sdcard.c
+index d35a9ec..b183480 100644
+--- a/omi/firmware/devkit/src/sdcard.c
++++ b/omi/firmware/devkit/src/sdcard.c
+@@ -31,10 +31,17 @@ static char current_full_path[MAX_PATH_LENGTH];
+ static char read_buffer[MAX_PATH_LENGTH];
+ static char write_buffer[MAX_PATH_LENGTH];
+ 
+ uint32_t file_num_array[2];
+ 
++/* Patch 0035: BLE-readable diagnostic counters. */
++uint32_t wtf_count = 0;
++uint32_t wtf_open_fail = 0;
++int32_t  wtf_open_last_ret = 0;
++uint32_t wtf_write_fail = 0;
++uint32_t wtf_close_fail = 0;
++
+ static const char *disk_mount_pt = "/SD:/";
+ 
+ bool sd_enabled = false;
+ 
+ int mount_sd_card(void)
+@@ -219,19 +226,28 @@ int write_to_file(uint8_t *data, uint32_t length)
+     uint8_t *write_ptr = data;
+     /* Patch 0034: add FS_O_CREATE so the file is created on first
+      * write. omi's initialize_audio_file has a use-after-free that
+      * leaves a01.txt missing after mount on this board, and FS_O_APPEND
+      * alone does not create. */
+-    fs_open(&write_file, write_buffer, FS_O_WRITE | FS_O_APPEND | FS_O_CREATE);
+-    fs_write(&write_file, write_ptr, length);
++    /* Patch 0035: counter for BLE-readable diagnostics. */
++    wtf_count++;
++    int _open_ret = fs_open(&write_file, write_buffer, FS_O_WRITE | FS_O_APPEND | FS_O_CREATE);
++    wtf_open_last_ret = _open_ret;
++    if (_open_ret) {
++        wtf_open_fail++;
++        return 0;
++    }
++    int _wr = fs_write(&write_file, write_ptr, length);
++    if (_wr < 0) wtf_write_fail++;
+     /* Patch 0031: explicitly sync to commit FAT directory-entry update
+      * before close. On this SD/board combo fs_close returns -EIO every
+      * call, which means the dir entry never gets the new size, which
+      * means get_file_size() always returns 0 and chunk rotation never
+      * fires. fs_sync forces the metadata flush regardless. */
+     fs_sync(&write_file);
+-    fs_close(&write_file);
++    int _cr = fs_close(&write_file);
++    if (_cr) wtf_close_fail++;
+     return 0;
+ }
+ 
+ int initialize_audio_file(uint8_t num)
+ {
+diff --git a/omi/firmware/devkit/src/storage.c b/omi/firmware/devkit/src/storage.c
+index 86d5551..3051e08 100644
+--- a/omi/firmware/devkit/src/storage.c
++++ b/omi/firmware/devkit/src/storage.c
+@@ -101,15 +101,27 @@ static ssize_t storage_read_characteristic(struct bt_conn *conn,
+                                            void *buf,
+                                            uint16_t len,
+                                            uint16_t offset)
+ {
+     k_msleep(10);
+-    uint32_t amount[2] = {0};
+-    for (int i = 0; i < 2; i++) {
+-        amount[i] = file_num_array[i];
+-    }
+-    ssize_t result = bt_gatt_attr_read(conn, attr, buf, len, offset, amount, 2 * sizeof(uint32_t));
++    /* Patch 0035: extended 32-byte diagnostic payload. */
++    extern uint32_t wts_count;
++    extern uint32_t wtf_count;
++    extern uint32_t wtf_open_fail;
++    extern int32_t  wtf_open_last_ret;
++    extern uint32_t wtf_write_fail;
++    extern uint32_t wtf_close_fail;
++    uint32_t amount[8];
++    amount[0] = file_num_array[0];
++    amount[1] = file_num_array[1];
++    amount[2] = wts_count;
++    amount[3] = wtf_count;
++    amount[4] = wtf_open_fail;
++    amount[5] = (uint32_t)wtf_open_last_ret;
++    amount[6] = wtf_write_fail;
++    amount[7] = wtf_close_fail;
++    ssize_t result = bt_gatt_attr_read(conn, attr, buf, len, offset, amount, 8 * sizeof(uint32_t));
+     return result;
+ }
+ 
+ uint8_t transport_started = 0;
+ 
+diff --git a/omi/firmware/devkit/src/transport.c b/omi/firmware/devkit/src/transport.c
+index 73eae5a..d55651e 100644
+--- a/omi/firmware/devkit/src/transport.c
++++ b/omi/firmware/devkit/src/transport.c
+@@ -28,10 +28,14 @@ LOG_MODULE_REGISTER(transport, CONFIG_LOG_DEFAULT_LEVEL);
+ #define MAX_STORAGE_BYTES 0xFFFF0000
+ extern bool is_connected;
+ extern bool storage_is_on;
+ extern uint8_t file_count;
+ extern uint32_t file_num_array[2];
++
++/* Patch 0035: BLE-readable diagnostic counter for write_to_storage. */
++uint32_t wts_count = 0;
++
+ struct bt_conn *current_connection = NULL;
+ uint16_t current_mtu = 0;
+ uint16_t current_package_index = 0;
+ 
+ //
+@@ -660,11 +664,11 @@ static uint16_t buffer_offset = 0;
+ bool write_to_storage(void)
+ { // max possible packing
+     /* Patch 0033: instrumentation. Logs every 100th call so serial
+      * shows write activity without spamming. Helps confirm whether SD
+      * writes reach this layer at all (vs being gated upstream). */
+-    static uint32_t wts_count = 0;
++    /* Patch 0035: wts_count moved to file scope for BLE exposure. */
+     if ((wts_count % 100) == 0) {
+         LOG_INF("write_to_storage: count=%u  buf_off=%u", wts_count, buffer_offset);
+     }
+     wts_count++;
+ 

@@ -1,0 +1,38 @@
+From: knsol <noreply@anthropic.com>
+Subject: [PATCH] fix: drop FS_O_APPEND, seek-to-end after open
+
+After patch 0036 (hardcoded path), fs_open went from -EINVAL (-22) to
+-ENOENT (-2) — different error. With path /SD:/audio/a01.txt and
+flags FS_O_WRITE | FS_O_APPEND | FS_O_CREATE, Zephyr/FATFS returns
+-ENOENT even though /SD:/audio exists and FS_O_CREATE is set.
+
+omi's create_file (used at boot for info.txt) uses FS_O_WRITE |
+FS_O_CREATE (no APPEND) and works fine. So FS_O_APPEND in combination
+with FS_O_CREATE appears broken in this Zephyr/FATFS version.
+
+Drop FS_O_APPEND and instead seek to end after open. Functionally
+equivalent.
+---
+diff --git a/omi/firmware/devkit/src/sdcard.c b/omi/firmware/devkit/src/sdcard.c
+--- a/omi/firmware/devkit/src/sdcard.c
++++ b/omi/firmware/devkit/src/sdcard.c
+@@ -236,12 +236,18 @@ int write_to_file(uint8_t *data, uint32_t length)
+      * write_buffer is corrupted/empty by the time write_to_file is
+      * invoked. Hardcoded path removes the static-buffer dependency. */
+     const char *target_path = "/SD:/audio/a01.txt";
+-    int _open_ret = fs_open(&write_file, target_path, FS_O_WRITE | FS_O_APPEND | FS_O_CREATE);
++    /* Patch 0037: drop FS_O_APPEND. With FS_O_WRITE | FS_O_APPEND |
++     * FS_O_CREATE Zephyr/FATFS returns -ENOENT here even though the
++     * parent dir exists. Same flags minus APPEND work fine for
++     * info.txt at boot. Use them and seek to end manually. */
++    int _open_ret = fs_open(&write_file, target_path, FS_O_WRITE | FS_O_CREATE);
+     wtf_open_last_ret = _open_ret;
+     if (_open_ret) {
+         wtf_open_fail++;
+         return 0;
+     }
++    /* Seek to end so writes append. */
++    fs_seek(&write_file, 0, FS_SEEK_END);
+     int _wr = fs_write(&write_file, write_ptr, length);
+     if (_wr < 0) wtf_write_fail++;
+     /* Patch 0031: explicitly sync to commit FAT directory-entry update

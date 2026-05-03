@@ -1,0 +1,21 @@
+diff --git a/omi/firmware/devkit/src/transport.c b/omi/firmware/devkit/src/transport.c
+index 2b63517..d082671 100644
+--- a/omi/firmware/devkit/src/transport.c
++++ b/omi/firmware/devkit/src/transport.c
+@@ -402,6 +402,7 @@ static void _transport_connected(struct bt_conn *conn, uint8_t err)
+     struct bt_conn_info info = {0};
+     storage_is_on = true;
+ 
++    LOG_INF("Transport _connected callback entered, err=0x%02x", err);
+     err = bt_conn_get_info(conn, &info);
+     if (err) {
+         LOG_ERR("Failed to get connection info (err %d)", err);
+@@ -435,7 +436,7 @@ static void _transport_disconnected(struct bt_conn *conn, uint8_t err)
+     is_connected = false;
+     storage_is_on = false;
+ 
+-    LOG_INF("Transport disconnected");
++    LOG_INF("Transport disconnected, reason=0x%02x", err);
+ 
+     if (current_connection != NULL) {
+         bt_conn_unref(current_connection);

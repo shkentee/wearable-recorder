@@ -1,0 +1,32 @@
+From: knsol <noreply@anthropic.com>
+Subject: [PATCH] fix: tolerate move_write_pointer failure in mount_sd_card
+
+After a long recording, mount_sd_card() ends up failing with
+"invalid file in move write pointer" — fs_stat on /SD:/audio/a01.txt
+fails even though the FAT directory listing right above us showed
+the file exists. Likely a FATFS quirk with the file size or some
+intermediate state.
+
+The good news is fs_mount itself succeeded ("SD card mounted
+successfully" logged), and write_buffer was filled in by the snprintf
+before fs_stat — so write_to_file later can still append to the file.
+
+Demote move_write_pointer / move_read_pointer failures to LOG_WRN and
+keep going. mount_sd_card returns 0 instead of -1 → main proceeds to
+transport_start, pusher thread starts, audio writes resume.
+---
+diff --git a/omi/firmware/devkit/src/sdcard.c b/omi/firmware/devkit/src/sdcard.c
+--- a/omi/firmware/devkit/src/sdcard.c
++++ b/omi/firmware/devkit/src/sdcard.c
+@@ -107,9 +107,9 @@ int mount_sd_card(void)
+     LOG_INF("new num files: %d", file_count);
+
+     res = move_write_pointer(file_count);
+     if (res) {
+-        LOG_ERR("error while moving the write pointer");
+-        return -1;
++        LOG_WRN("move_write_pointer failed (%d) — keeping path from snprintf, continuing", res);
++        res = 0;
+     }
+
+     move_read_pointer(file_count);

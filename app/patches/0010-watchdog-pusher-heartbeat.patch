@@ -1,0 +1,53 @@
+diff --git a/omi/firmware/devkit/src/main.c b/omi/firmware/devkit/src/main.c
+index f1832d8..7b72550 100644
+--- a/omi/firmware/devkit/src/main.c
++++ b/omi/firmware/devkit/src/main.c
+@@ -383,11 +383,19 @@ int main(void)
+     LOG_PRINTK("\n");
+     LOG_INF("Entering main loop...\n");
+ 
+-    while (1) {
+-        watchdog_feed();
+-
+-        set_led_state();
+-        k_msleep(500);
++    {
++        /* Bring-up debug 2026-04-30: heartbeat counter to see whether
++         * main is the thread that stalls during BLE CONNECT. */
++        static uint32_t main_loop_count = 0;
++        while (1) {
++            watchdog_feed();
++            main_loop_count++;
++            if ((main_loop_count % 10) == 0) {
++                LOG_INF("main heartbeat: %u (5 s)", main_loop_count);
++            }
++            set_led_state();
++            k_msleep(500);
++        }
+     }
+ 
+     // Unreachable
+diff --git a/omi/firmware/devkit/src/transport.c b/omi/firmware/devkit/src/transport.c
+index d3ee60b..693d516 100644
+--- a/omi/firmware/devkit/src/transport.c
++++ b/omi/firmware/devkit/src/transport.c
+@@ -780,9 +780,16 @@ void pusher(void)
+          * CONNECT. Replace the bare yield with a tiny msleep so this
+          * worker actually gives the BT stack timing budget for connection
+          * setup, MTU exchange, and gatt callbacks. */
+-        /* See 0007 — bumped from 2 ms to 20 ms after 0008 silence
+-         * patch confirmed the LOG_ERR storm was the dominant CPU hog
+-         * during BLE connect; 20 ms is plenty for audio (50 fps). */
++        /* Bring-up debug 2026-04-30: feed the watchdog from pusher as
++         * a safety net + heartbeat counter to confirm pusher is alive
++         * during BLE CONNECT. */
++        extern void watchdog_feed(void);
++        watchdog_feed();
++        static uint32_t pusher_loop_count = 0;
++        pusher_loop_count++;
++        if ((pusher_loop_count % 250) == 0) {
++            LOG_INF("pusher heartbeat: %u (5 s)", pusher_loop_count);
++        }
+         k_msleep(20);
+     }
+ }
