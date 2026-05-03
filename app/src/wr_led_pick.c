@@ -16,6 +16,12 @@ struct wr_led_rgb wr_led_pick(struct wr_led_state s, uint32_t tick)
 	const bool     blink_250ms  = (tick % 3)  < 2;        /* faster */
 	const bool     blink_1s     = (tick % 10) < 5;        /* 50% duty 1 s */
 	const bool     ble_rec_white = ((tick / 50) & 1u) != 0;
+	/* Pulse for SD-only recording: short 200 ms flash every 3 s.
+	 * Software triangle "fade" via three intermediate ticks would be
+	 * indistinguishable from a flat blink at 100 ms tick granularity,
+	 * so we keep it as a clean pulse and revisit with PWM once the
+	 * red LED pin can be repurposed to PWM0. */
+	const uint32_t pulse_on     = (tick % 30) < 2;        /* 200 ms / 3 s */
 
 	if (s.batt_pct <= 5) {
 		out.r = blink_250ms;                          /* red fast */
@@ -42,9 +48,10 @@ struct wr_led_rgb wr_led_pick(struct wr_led_state s, uint32_t tick)
 	} else if (s.ble_connected) {
 		out.g = hb_on;                                 /* green HB */
 	} else if (s.recording) {
-		out.r = hb_on;
-		out.g = hb_on;
-		out.b = hb_on;                                 /* white HB */
+		/* SD-only mode (no BLE): green pulse every 3 s. Slow enough
+		 * that it doesn't draw attention but visible enough to
+		 * confirm the device is alive and recording. */
+		out.g = pulse_on;
 	}
 	/* otherwise: idle, all off */
 

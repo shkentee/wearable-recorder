@@ -1,0 +1,60 @@
+From: knsol <noreply@anthropic.com>
+Subject: [PATCH] revert: roll back patches 0040 + 0041 (they corrupted exFAT)
+
+Patches 0040 (fs_unlink stale a01.txt at boot) and 0041 (FAT health
+check + fs_mkfs auto-reformat) were both wrong-headed. The 128GB SDXC
+is exFAT by design and Zephyr supports it (CONFIG_FS_FATFS_EXFAT=y).
+The card was working fine — patch 0038's first run had 96/96
+successful writes, patch 0042 confirmed 9.2 s of audio recorded — but
+0040 + 0041 mangled the exFAT structure on subsequent boots, leaving
+fs_open returning -ENOENT permanently.
+
+Roll both back. Keep 0042 (sector 0 OEM ID diagnostic) and 0043
+(persistent file handle / no close churn). Those address real issues
+without touching the filesystem layout.
+---
+diff --git a/omi/firmware/devkit/src/sdcard.c b/omi/firmware/devkit/src/sdcard.c
+index 9fa1f18..949d0bb 100644
+--- a/omi/firmware/devkit/src/sdcard.c
++++ b/omi/firmware/devkit/src/sdcard.c
+@@ -104,34 +104,16 @@ int mount_sd_card(void)
+     } else {
+         LOG_ERR("f_mount failed: %d", res);
+         return -1;
+     }
+ 
+-    /* Patch 0040: nuke stale a01.txt at boot to recover from prior
+-     * half-committed FAT entries (fs_close -EIO during normal writes
+-     * leaves the file unrecoverable on next boot). */
+-    int unlink_ret = fs_unlink("/SD:/a01.txt");
+-    LOG_INF("boot: fs_unlink(/SD:/a01.txt) = %d", unlink_ret);
+-
+-    /* Patch 0041: detect FAT corruption + reformat via fs_mkfs. */
+-    {
+-        struct fs_file_t test_f;
+-        fs_file_t_init(&test_f);
+-        int test_ret = fs_open(&test_f, "/SD:/.fmttest", FS_O_WRITE | FS_O_CREATE);
+-        if (test_ret == 0) {
+-            fs_close(&test_f);
+-            fs_unlink("/SD:/.fmttest");
+-            LOG_INF("boot: FAT health check OK");
+-        } else {
+-            LOG_WRN("boot: FAT health test fs_open=%d, reformatting...", test_ret);
+-            fs_unmount(&mount_point);
+-            int mkfs_ret = fs_mkfs(FS_FATFS, (uintptr_t)"SD", NULL, 0);
+-            LOG_INF("boot: fs_mkfs = %d", mkfs_ret);
+-            int rem_ret = fs_mount(&mount_point);
+-            LOG_INF("boot: re-fs_mount = %d", rem_ret);
+-        }
+-    }
++    /* Patch 0044: revert 0040 (fs_unlink at boot) and 0041
++     * (fs_mkfs auto-reformat). Both turned out to mangle the exFAT
++     * filesystem on the 128GB SDXC, leaving it in a state where
++     * fs_open(FS_O_CREATE) returns -ENOENT for every write_to_file
++     * call. The card is exFAT by design and Zephyr supports it via
++     * CONFIG_FS_FATFS_EXFAT=y; treating it as broken-FAT was wrong. */
+ 
+     res = fs_mkdir("/SD:/audio");
+ 
+     if (res == FR_OK) {
+         LOG_INF("audio directory created successfully");

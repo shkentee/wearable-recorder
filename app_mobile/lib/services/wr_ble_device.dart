@@ -59,8 +59,20 @@ class WrBleDevice {
 
   String get id => _device.remoteId.str;
 
-  Future<void> connect({Duration timeout = const Duration(seconds: 15)}) async {
-    await _device.connect(timeout: timeout, autoConnect: false);
+  Future<void> connect({Duration timeout = const Duration(seconds: 30)}) async {
+    // autoConnect: true on Android avoids the GATT_ERROR (0x85 / 133) that
+    // otherwise hits first-time connections to never-bonded peripherals.
+    // It queues the connection at the OS level and retries until cancel,
+    // which is more tolerant of address-type / param mismatches than the
+    // direct-connect path. The trade-off is that `connect()` returns as
+    // soon as the request is queued — not when the link is actually up —
+    // so we have to wait for the connectionState transition before any
+    // GATT operation, otherwise discoverServices throws fbp-code 6
+    // "device is not connected".
+    await _device.connect(timeout: timeout, autoConnect: true);
+    await _device.connectionState
+        .firstWhere((s) => s == BluetoothConnectionState.connected)
+        .timeout(timeout);
     final services = await _device.discoverServices();
     _discoveredServices = services;
     final audio = services.firstWhere(

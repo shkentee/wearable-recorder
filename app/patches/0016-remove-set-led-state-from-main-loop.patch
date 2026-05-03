@@ -1,0 +1,19 @@
+diff --git a/omi/firmware/devkit/src/main.c b/omi/firmware/devkit/src/main.c
+index 71c3f8a..f9fa657 100644
+--- a/omi/firmware/devkit/src/main.c
++++ b/omi/firmware/devkit/src/main.c
+@@ -384,7 +384,13 @@ int main(void)
+             watchdog_feed();
+             main_loop_count++;
+             /* No LOG_INF here — see 0011 commit message. */
+-            set_led_state();
++            /* set_led_state() removed in patch 0016: it was forcing
++             * red ON every 500 ms because is_connected stays false
++             * in SD-only mode (no BLE), which fought wr_led_status
++             * (100 ms tick) and produced a 5 Hz red flicker. With
++             * the call gone, wr_led_status owns the LEDs entirely
++             * and runs the proper white heartbeat (recording=true,
++             * ble_connected=false → white HB, 100 ms / 5 s). */
+             k_msleep(500);
+         }
+     }

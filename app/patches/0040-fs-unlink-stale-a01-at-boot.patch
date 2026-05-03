@@ -1,0 +1,34 @@
+From: knsol <noreply@anthropic.com>
+Subject: [PATCH] fix: fs_unlink stale /SD:/a01.txt at boot
+
+Reproduced regression: patch 0038 first run had fs_open failures = 0
+(96 successful writes), but every subsequent boot has fs_open failures
+= 100% with -ENOENT — even with the same firmware. The SD card's
+prior /SD:/a01.txt entry is in a half-committed state from fs_close
+-EIO during the previous run; the FAT entry exists but Zephyr/FATFS
+can't open it.
+
+fs_unlink at mount removes the stale entry so write_to_file's
+fs_open(FS_O_CREATE) creates a fresh one.
+---
+diff --git a/omi/firmware/devkit/src/sdcard.c b/omi/firmware/devkit/src/sdcard.c
+index 719b0a2..ad07db1 100644
+--- a/omi/firmware/devkit/src/sdcard.c
++++ b/omi/firmware/devkit/src/sdcard.c
+@@ -80,10 +80,16 @@ int mount_sd_card(void)
+     } else {
+         LOG_ERR("f_mount failed: %d", res);
+         return -1;
+     }
+ 
++    /* Patch 0040: nuke stale a01.txt at boot to recover from prior
++     * half-committed FAT entries (fs_close -EIO during normal writes
++     * leaves the file unrecoverable on next boot). */
++    int unlink_ret = fs_unlink("/SD:/a01.txt");
++    LOG_INF("boot: fs_unlink(/SD:/a01.txt) = %d", unlink_ret);
++
+     res = fs_mkdir("/SD:/audio");
+ 
+     if (res == FR_OK) {
+         LOG_INF("audio directory created successfully");
+         initialize_audio_file(1);

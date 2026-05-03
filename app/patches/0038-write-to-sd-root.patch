@@ -1,0 +1,34 @@
+From: knsol <noreply@anthropic.com>
+Subject: [PATCH] fix: write a01.txt to /SD:/ root instead of /SD:/audio/
+
+After patches 0036+0037, fs_open still returns -ENOENT for
+/SD:/audio/a01.txt even with valid FS_O_WRITE|FS_O_CREATE flags.
+mount_sd_card reports the audio directory was created (or already
+existed via FR_EXIST), but the path stays unresolvable.
+
+Side-stepping the issue: drop the subdirectory entirely and write
+to /SD:/a01.txt at the root. info.txt at /SD:/ root works fine via
+the same fs_open flag pattern (proved at boot), so root-level
+writes are known good on this Zephyr/FATFS combo.
+
+This is a temporary debug fix to confirm whether subdirectory access
+is the root cause or whether something else is broken downstream.
+---
+diff --git a/omi/firmware/devkit/src/sdcard.c b/omi/firmware/devkit/src/sdcard.c
+--- a/omi/firmware/devkit/src/sdcard.c
++++ b/omi/firmware/devkit/src/sdcard.c
+@@ -235,7 +235,13 @@ int write_to_file(uint8_t *data, uint32_t length)
+      * returns -EINVAL on every call, which strongly suggests
+      * write_buffer is corrupted/empty by the time write_to_file is
+      * invoked. Hardcoded path removes the static-buffer dependency. */
+-    const char *target_path = "/SD:/audio/a01.txt";
++    /* Patch 0038: try root-level path. fs_open returned -ENOENT for
++     * /SD:/audio/a01.txt with FS_O_WRITE | FS_O_CREATE even though
++     * mount_sd_card claims /SD:/audio exists (mkdir returned EEXIST).
++     * Suspect the directory isn't properly accessible; skip the
++     * subdirectory entirely. wr_chunk's rotation logic uses absolute
++     * paths so dropping the subdir doesn't break it. */
++    const char *target_path = "/SD:/a01.txt";
+     /* Patch 0037: drop FS_O_APPEND. With FS_O_WRITE | FS_O_APPEND |
+      * FS_O_CREATE Zephyr/FATFS returns -ENOENT here even though the
+      * parent dir exists. Same flags minus APPEND work fine for

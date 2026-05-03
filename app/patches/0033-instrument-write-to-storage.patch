@@ -1,0 +1,38 @@
+From: knsol <noreply@anthropic.com>
+Subject: [PATCH] debug: instrument write_to_storage with 1-in-100 LOG_INF
+
+Patch 0032 was supposed to unblock SD writes during BLE connections by
+removing the unconditional storage_is_on=true on connect. But after
+flashing, file_num_array[0] is still 0 forever and serial shows ~1
+cmd24 every 8 seconds (vs the ~5 cmd24/sec we expected from the codec
+output rate).
+
+This patch adds a once-per-100-calls LOG_INF at the top of
+write_to_storage() so we can confirm in serial whether the function is
+reaching the disk path at all. If it logs at the expected rate, the
+gate is fine and the issue is downstream (write_to_file / FATFS). If
+it doesn't log, something upstream (pusher gating, ring buffer, mutex)
+is still blocking.
+
+Logging frequency 1/100 keeps CDC ringbuf safe at codec rate (~100 fps
+→ 1 log per second).
+---
+diff --git a/omi/firmware/devkit/src/transport.c b/omi/firmware/devkit/src/transport.c
+--- a/omi/firmware/devkit/src/transport.c
++++ b/omi/firmware/devkit/src/transport.c
+@@ -657,6 +657,15 @@ static uint16_t buffer_offset = 0;
+ // out to both SD and BLE.
+ bool write_to_storage(void)
+ { // max possible packing
++    /* Patch 0033: instrumentation. Logs every 100th call so serial
++     * shows write activity without spamming. Helps confirm whether SD
++     * writes reach this layer at all (vs being gated upstream). */
++    static uint32_t wts_count = 0;
++    if ((wts_count % 100) == 0) {
++        LOG_INF("write_to_storage: count=%u  buf_off=%u", wts_count, buffer_offset);
++    }
++    wts_count++;
++
+     uint8_t *buffer = tx_buffer + 2;
+     uint8_t packet_size = (uint8_t) (tx_buffer_size + OPUS_PREFIX_LENGTH);
+

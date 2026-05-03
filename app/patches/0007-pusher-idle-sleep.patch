@@ -1,0 +1,22 @@
+diff --git a/omi/firmware/devkit/src/transport.c b/omi/firmware/devkit/src/transport.c
+index 1bfbc37..cf5decd 100644
+--- a/omi/firmware/devkit/src/transport.c
++++ b/omi/firmware/devkit/src/transport.c
+@@ -762,7 +762,16 @@ void pusher(void)
+             bt_conn_unref(conn);
+         }
+ 
+-        k_yield();
++        /* Bring-up debug 2026-04-30: pusher used k_yield() only, which on
++         * a single-core nRF52 starves the BT host / system workqueue
++         * threads while ring_buf is empty (every iteration grabs the
++         * spinlock, fails read_from_tx_queue, LOG_ERRs, yields). Result:
++         * main thread eventually misses watchdog_feed long enough for the
++         * 30 s WDT to reset the device immediately after a fresh BLE
++         * CONNECT. Replace the bare yield with a tiny msleep so this
++         * worker actually gives the BT stack timing budget for connection
++         * setup, MTU exchange, and gatt callbacks. */
++        k_msleep(2);
+     }
+ }
+ extern struct bt_gatt_service storage_service;

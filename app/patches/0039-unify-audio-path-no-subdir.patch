@@ -1,0 +1,51 @@
+From: knsol <noreply@anthropic.com>
+Subject: [PATCH] fix: align generate_new_audio_header to root path (no /audio/)
+
+Patch 0038 moved write_to_file's target from /SD:/audio/a01.txt to
+/SD:/a01.txt and SD writes succeeded for the first time. But
+file_num_array[0] still reads 0 because get_file_size etc. all use
+generate_new_audio_header which still returns "audio/aNN.txt".
+
+Drop the "audio/" prefix so all paths align with the write target.
+file_num_array[0] now reflects the actual a01.txt size, unblocking
+heartbeat_count==255 → update_file_size → chunk_rotation flow.
+---
+diff --git a/omi/firmware/devkit/src/sdcard.c b/omi/firmware/devkit/src/sdcard.c
+index 4eefa3c..719b0a2 100644
+--- a/omi/firmware/devkit/src/sdcard.c
++++ b/omi/firmware/devkit/src/sdcard.c
+@@ -280,25 +280,20 @@ int initialize_audio_file(uint8_t num)
+ 
+ char *generate_new_audio_header(uint8_t num)
+ {
+     if (num > 99)
+         return NULL;
+-    char *ptr_ = k_malloc(14);
++    /* Patch 0039: drop "audio/" prefix to align with patch 0038. */
++    char *ptr_ = k_malloc(8);
+     ptr_[0] = 'a';
+-    ptr_[1] = 'u';
+-    ptr_[2] = 'd';
+-    ptr_[3] = 'i';
+-    ptr_[4] = 'o';
+-    ptr_[5] = '/';
+-    ptr_[6] = 'a';
+-    ptr_[7] = 48 + (num / 10);
+-    ptr_[8] = 48 + (num % 10);
+-    ptr_[9] = '.';
+-    ptr_[10] = 't';
+-    ptr_[11] = 'x';
+-    ptr_[12] = 't';
+-    ptr_[13] = '\0';
++    ptr_[1] = 48 + (num / 10);
++    ptr_[2] = 48 + (num % 10);
++    ptr_[3] = '.';
++    ptr_[4] = 't';
++    ptr_[5] = 'x';
++    ptr_[6] = 't';
++    ptr_[7] = '\0';
+ 
+     return ptr_;
+ }
+ 
+ int get_file_contents(struct fs_dir_t *zdp, struct fs_dirent *entry)

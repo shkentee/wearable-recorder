@@ -1,0 +1,51 @@
+From: knsol <noreply@anthropic.com>
+Subject: [PATCH] fix: detect FAT corruption + auto-reformat via fs_mkfs
+
+After patches 0036-0040, fs_open still returns -ENOENT on /SD:/a01.txt
+on every boot after the first successful one. mount_sd_card succeeds
+but file ops fail — the FAT structure is corrupt at a level that
+fs_unlink can't recover.
+
+This patch adds a "FAT health check" right after mount: try opening a
+test file. If that fails, fs_unmount + fs_mkfs (reformat) + remount.
+The FAT comes back clean and subsequent file ops work.
+
+Targeted/non-destructive: a healthy FAT skips the format. Only a
+detected-corrupt FAT triggers the reformat path. Requires
+CONFIG_FILE_SYSTEM_MKFS=y and CONFIG_FS_FATFS_MKFS=y in the build
+(added to spisd-fixup.conf).
+---
+diff --git a/omi/firmware/devkit/src/sdcard.c b/omi/firmware/devkit/src/sdcard.c
+index ad07db1..9107c6d 100644
+--- a/omi/firmware/devkit/src/sdcard.c
++++ b/omi/firmware/devkit/src/sdcard.c
+@@ -86,10 +86,29 @@ int mount_sd_card(void)
+      * half-committed FAT entries (fs_close -EIO during normal writes
+      * leaves the file unrecoverable on next boot). */
+     int unlink_ret = fs_unlink("/SD:/a01.txt");
+     LOG_INF("boot: fs_unlink(/SD:/a01.txt) = %d", unlink_ret);
+ 
++    /* Patch 0041: detect FAT corruption + reformat via fs_mkfs. */
++    {
++        struct fs_file_t test_f;
++        fs_file_t_init(&test_f);
++        int test_ret = fs_open(&test_f, "/SD:/.fmttest", FS_O_WRITE | FS_O_CREATE);
++        if (test_ret == 0) {
++            fs_close(&test_f);
++            fs_unlink("/SD:/.fmttest");
++            LOG_INF("boot: FAT health check OK");
++        } else {
++            LOG_WRN("boot: FAT health test fs_open=%d, reformatting...", test_ret);
++            fs_unmount(&mount_point);
++            int mkfs_ret = fs_mkfs(FS_FATFS, (uintptr_t)"SD", NULL, 0);
++            LOG_INF("boot: fs_mkfs = %d", mkfs_ret);
++            int rem_ret = fs_mount(&mount_point);
++            LOG_INF("boot: re-fs_mount = %d", rem_ret);
++        }
++    }
++
+     res = fs_mkdir("/SD:/audio");
+ 
+     if (res == FR_OK) {
+         LOG_INF("audio directory created successfully");
+         initialize_audio_file(1);
