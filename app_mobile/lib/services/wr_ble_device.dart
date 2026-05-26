@@ -69,10 +69,21 @@ class WrBleDevice {
     // so we have to wait for the connectionState transition before any
     // GATT operation, otherwise discoverServices throws fbp-code 6
     // "device is not connected".
-    await _device.connect(timeout: timeout, autoConnect: true);
+    // autoConnect requires mtu == null at connect time (flutter_blue_plus
+    // asserts they are mutually exclusive — the default mtu is 512). We
+    // negotiate the larger MTU explicitly once the link is up.
+    await _device.connect(timeout: timeout, autoConnect: true, mtu: null);
     await _device.connectionState
         .firstWhere((s) => s == BluetoothConnectionState.connected)
         .timeout(timeout);
+    if (Platform.isAndroid) {
+      // 247-byte MTU lets Opus audio notifications arrive unfragmented.
+      try {
+        await _device.requestMtu(247);
+      } catch (_) {
+        // Non-fatal: fall back to the default 23-byte MTU.
+      }
+    }
     final services = await _device.discoverServices();
     _discoveredServices = services;
     final audio = services.firstWhere(
@@ -80,14 +91,17 @@ class WrBleDevice {
       orElse: () =>
           throw StateError('audio service ${WrUuids.audioService} not found'),
     );
-    final codec = audio.characteristics.firstWhere(
-      (c) => c.characteristicUuid == Guid(WrUuids.audioCodec),
+    // Audio packets stream on audioData (19b10001, NOTIFY). audioCodec
+    // (19b10002) is READ-only and only carries the codec id, so subscribing
+    // to it yields zero packets.
+    final dataChar = audio.characteristics.firstWhere(
+      (c) => c.characteristicUuid == Guid(WrUuids.audioData),
       orElse: () =>
-          throw StateError('audioCodec ${WrUuids.audioCodec} not found'),
+          throw StateError('audioData ${WrUuids.audioData} not found'),
     );
     _sink = _injectedSink ?? await _defaultSink();
-    await codec.setNotifyValue(true);
-    _notifySub = codec.lastValueStream.listen(_onPacket);
+    await dataChar.setNotifyValue(true);
+    _notifySub = dataChar.lastValueStream.listen(_onPacket);
     // D7: send current epoch so firmware uses wall-clock filenames.
     await _trySendTimeSync(services);
     // Battery Service: subscribe for level updates (best-effort).
