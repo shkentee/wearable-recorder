@@ -123,16 +123,34 @@ class WrStorageSession {
   /// stalls for longer than [timeout].
   Future<Uint8List> fetchFile(
     String filename, {
-    Duration timeout = const Duration(minutes: 5),
+    Duration idleTimeout = const Duration(seconds: 20),
     void Function(int bytes)? onProgress,
   }) async {
     final chunks = <List<int>>[];
     int totalBytes = 0;
     final completer = Completer<void>();
 
+    // Inactivity watchdog: a multi-MB recording can take many minutes over
+    // BLE (~6 KB/s), so a fixed total timeout wrongly aborts large files.
+    // Instead we only fail if no chunk arrives for [idleTimeout] — large
+    // transfers complete as long as data keeps flowing, and genuine stalls
+    // are caught quickly.
+    Timer? watchdog;
+    void resetWatchdog() {
+      watchdog?.cancel();
+      watchdog = Timer(idleTimeout, () {
+        if (!completer.isCompleted) {
+          completer.completeError(TimeoutException(
+              'storage fetch stalled: no data for ${idleTimeout.inSeconds}s '
+              'after $totalBytes bytes'));
+        }
+      });
+    }
+
     _sub?.cancel();
     _sub = _stream.onValueReceived.listen((data) {
       if (data.isEmpty) return;
+      resetWatchdog(); // any traffic (incl. the 0x04 size tag) keeps us alive
       switch (data[0]) {
         case _notifData:
           if (data.length > 1) {
@@ -151,9 +169,14 @@ class WrStorageSession {
       }
     });
 
+    resetWatchdog();
     await _ctrl.write([_cmdFetch, ...filename.codeUnits],
         withoutResponse: true);
-    await completer.future.timeout(timeout);
+    try {
+      await completer.future;
+    } finally {
+      watchdog?.cancel();
+    }
 
     // Concatenate chunks into a single Uint8List.
     final result = Uint8List(totalBytes);
