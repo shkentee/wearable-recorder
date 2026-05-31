@@ -18,6 +18,11 @@ class WrUuids {
   static const String timeSyncService = '19b10005-e8f2-537e-4f6c-d104768a1214';
   static const String timeSyncChar    = '19b10005-e8f2-537e-4f6c-d104768a1214';
 
+  // Recording on/off control (D9): READ 1 byte state (1=recording, 0=paused),
+  // WRITE 1 byte (0=pause SD recording, non-zero=resume). Single-char service.
+  static const String recControlService = '19b10006-e8f2-537e-4f6c-d104768a1214';
+  static const String recControlChar    = '19b10006-e8f2-537e-4f6c-d104768a1214';
+
   // Storage data stream service (chunk fetch).
   static const String storageService     = '30295780-4301-eabd-2904-2849adfeae43';
   static const String storageStream      = '30295781-4301-eabd-2904-2849adfeae43';

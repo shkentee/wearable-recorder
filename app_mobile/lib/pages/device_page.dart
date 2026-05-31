@@ -40,6 +40,8 @@ class _DevicePageState extends State<DevicePage> {
   int _savedBytes = 0;
   int _lostPackets = 0;
   int? _batteryPct; // null until first Battery Service notify/read
+  double _level = 0.0; // live mic level 0..1
+  bool? _recording; // device SD recording on/off; null = unsupported firmware
   bool _uploading = false;
   bool _autoUpload = true; // auto-upload completed recordings to Drive
   bool _autoUploadBusy = false;
@@ -80,6 +82,10 @@ class _DevicePageState extends State<DevicePage> {
       if (!mounted) return;
       setState(() => _batteryPct = pct);
     });
+    widget.device.audioLevel.listen((lvl) {
+      if (!mounted) return;
+      setState(() => _level = lvl);
+    });
     _init();
   }
 
@@ -98,6 +104,9 @@ class _DevicePageState extends State<DevicePage> {
       // Persist the device address so ScanPage can auto-reconnect next launch.
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString(_kLastDeviceId, widget.device.id);
+      // Reflect the device's current recording on/off state (if supported).
+      final rec = await widget.device.readRecordingState();
+      if (mounted) setState(() => _recording = rec);
     } catch (e) {
       if (!mounted) return;
       setState(() => _status = 'error: $e');
@@ -290,6 +299,59 @@ class _DevicePageState extends State<DevicePage> {
             const SizedBox(height: 8),
             Text('Lost: $_lostPackets',
                 style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 24),
+            const Row(
+              children: [
+                Icon(Icons.mic, size: 20),
+                SizedBox(width: 8),
+                Text('Mic level'),
+              ],
+            ),
+            const SizedBox(height: 6),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(6),
+              child: LinearProgressIndicator(
+                value: _level,
+                minHeight: 16,
+                backgroundColor: Colors.grey.shade300,
+                valueColor: AlwaysStoppedAnimation<Color>(
+                  _level > 0.85
+                      ? Colors.red
+                      : _level > 0.5
+                          ? Colors.orange
+                          : Colors.green,
+                ),
+              ),
+            ),
+            if (_recording != null) ...[
+              const SizedBox(height: 20),
+              Card(
+                margin: EdgeInsets.zero,
+                child: SwitchListTile(
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 12),
+                  secondary: Icon(
+                    _recording! ? Icons.fiber_manual_record : Icons.stop_circle_outlined,
+                    color: _recording! ? Colors.red : null,
+                  ),
+                  title: const Text('Recording to SD'),
+                  subtitle: Text(
+                      _recording! ? 'On — saving on device' : 'Off — paused'),
+                  value: _recording!,
+                  onChanged: (v) async {
+                    setState(() => _recording = v); // optimistic
+                    try {
+                      await widget.device.setRecording(v);
+                    } catch (e) {
+                      if (mounted) {
+                        setState(() => _recording = !v); // revert on failure
+                        _showSnackBar('Failed to ${v ? 'start' : 'stop'} recording: $e',
+                            isError: true);
+                      }
+                    }
+                  },
+                ),
+              ),
+            ],
             const Spacer(),
             const Text(
               'Phase 6 MVP: notify subscription + raw dump. Opus decode '

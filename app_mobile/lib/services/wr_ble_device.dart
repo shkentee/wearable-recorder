@@ -1,7 +1,10 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:opus_dart/opus_dart.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'wr_audio_packet.dart';
@@ -31,10 +34,17 @@ class WrBleDevice {
   final _bytesSaved = StreamController<int>.broadcast();
   final _lostPackets = StreamController<int>.broadcast();
   final _batteryLevel = StreamController<int>.broadcast();
+  final _audioLevel = StreamController<double>.broadcast();
   StreamSubscription<List<int>>? _batterySub;
   int _count = 0;
   int _lostCount = 0;
   int? _lastPacketId; // null until at least one valid packet has arrived
+
+  // Live mic-level meter: decode incoming Opus frames and emit a normalised
+  // 0..1 level (peak-held over a short window, ~10 Hz).
+  SimpleOpusDecoder? _meterDecoder;
+  double _meterMax = 0.0;
+  int _meterCount = 0;
 
   WrPacketSink? _sink;
   String? _lastDumpPath;
@@ -56,6 +66,11 @@ class WrBleDevice {
   /// Emits on connect (initial READ) and whenever the firmware notifies.
   /// No-op if the firmware does not expose the Battery Service.
   Stream<int> get batteryLevel => _batteryLevel.stream;
+
+  /// Live mic level (0..1), decoded from the incoming Opus stream. Emits at
+  /// roughly 10 Hz while audio is flowing; useful as a "is it hearing me?"
+  /// meter. Scaled so normal speech reaches a visible level.
+  Stream<double> get audioLevel => _audioLevel.stream;
   Stream<BluetoothConnectionState> get state => _device.connectionState;
 
   String get name {
@@ -213,6 +228,36 @@ class WrBleDevice {
     if (sink != null) {
       sink.add(bytes).then((_) => _bytesSaved.add(sink.bytesWritten));
     }
+    _updateMeter(packet.payload);
+  }
+
+  /// Decodes one Opus frame and folds its RMS into the live level meter,
+  /// emitting a peak-held, normalised level every few frames. Best-effort:
+  /// any decode hiccup is ignored so the meter never disrupts capture.
+  void _updateMeter(List<int> opusFrame) {
+    if (opusFrame.isEmpty || _audioLevel.isClosed) return;
+    try {
+      _meterDecoder ??=
+          SimpleOpusDecoder(sampleRate: 16000, channels: 1);
+      final Int16List pcm =
+          _meterDecoder!.decode(input: Uint8List.fromList(opusFrame));
+      if (pcm.isEmpty) return;
+      double sumSq = 0;
+      for (final s in pcm) {
+        sumSq += (s * s).toDouble();
+      }
+      final rms = math.sqrt(sumSq / pcm.length);
+      if (rms > _meterMax) _meterMax = rms;
+      if (++_meterCount >= 8) {
+        // Scale so ordinary speech (~rms 2700) fills the bar; clamp to 1.
+        final level = (_meterMax / 32767.0 * 12.0).clamp(0.0, 1.0);
+        if (!_audioLevel.isClosed) _audioLevel.add(level);
+        _meterMax = 0.0;
+        _meterCount = 0;
+      }
+    } catch (_) {
+      // Ignore — meter is non-essential.
+    }
   }
 
   /// Opens a [WrStorageSession] against the device's storage GATT service.
@@ -225,6 +270,42 @@ class WrBleDevice {
     return WrStorageSession.fromServices(svcs);
   }
 
+  /// Finds the recording-control characteristic (D9), or null on firmware that
+  /// doesn't expose it.
+  BluetoothCharacteristic? _recControlChar() {
+    final svcs = _discoveredServices;
+    if (svcs == null) return null;
+    try {
+      final svc = svcs.firstWhere(
+          (s) => s.serviceUuid == Guid(WrUuids.recControlService));
+      return svc.characteristics.firstWhere(
+          (c) => c.characteristicUuid == Guid(WrUuids.recControlChar));
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Reads whether the device is currently recording to SD. Returns null if
+  /// the firmware doesn't support recording control (older builds).
+  Future<bool?> readRecordingState() async {
+    final c = _recControlChar();
+    if (c == null) return null;
+    try {
+      final v = await c.read();
+      return v.isNotEmpty && v[0] != 0;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Turns the device's SD recording on ([on]=true) or off. No-op if the
+  /// firmware doesn't expose recording control.
+  Future<void> setRecording(bool on) async {
+    final c = _recControlChar();
+    if (c == null) return;
+    await c.write([on ? 1 : 0], withoutResponse: false);
+  }
+
   Future<void> disconnect() async {
     await _notifySub?.cancel();
     _notifySub = null;
@@ -234,6 +315,10 @@ class WrBleDevice {
     _stateSub = null;
     await _sink?.close();
     _sink = null;
+    _meterDecoder?.destroy();
+    _meterDecoder = null;
+    _meterMax = 0.0;
+    _meterCount = 0;
     if (_device.isConnected) {
       await _device.disconnect();
     }
@@ -245,5 +330,6 @@ class WrBleDevice {
     await _bytesSaved.close();
     await _lostPackets.close();
     await _batteryLevel.close();
+    await _audioLevel.close();
   }
 }
