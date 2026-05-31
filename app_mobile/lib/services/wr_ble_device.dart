@@ -37,6 +37,12 @@ class WrBleDevice {
   int? _lastPacketId; // null until at least one valid packet has arrived
 
   WrPacketSink? _sink;
+  String? _lastDumpPath;
+
+  /// Filesystem path of the dump file for the current/most-recent session,
+  /// or null if no recording has started. Survives [disconnect] so callers
+  /// can auto-upload the just-finished file.
+  String? get lastDumpPath => _sink?.file.path ?? _lastDumpPath;
 
   Stream<int> get packetCount => _packetCount.stream;
   Stream<int> get bytesSaved => _bytesSaved.stream;
@@ -100,6 +106,7 @@ class WrBleDevice {
           throw StateError('audioData ${WrUuids.audioData} not found'),
     );
     _sink = _injectedSink ?? await _defaultSink();
+    _lastDumpPath = _sink?.file.path;
     await dataChar.setNotifyValue(true);
     _notifySub = dataChar.lastValueStream.listen(_onPacket);
     // D7: send current epoch so firmware uses wall-clock filenames.

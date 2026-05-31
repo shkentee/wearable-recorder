@@ -3,6 +3,11 @@ import 'dart:io';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:googleapis/drive/v3.dart' as drive;
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
+
+/// SharedPreferences key holding the set of already-uploaded dump identifiers
+/// (`<basename>:<finalSize>`), used to make auto-upload idempotent.
+const _kUploadedKey = 'wr_uploaded_ids';
 
 /// MIME type used when uploading Opus-in-OGG dump files to Drive.
 const _kOpusMime = 'audio/ogg; codecs=opus';
@@ -202,5 +207,52 @@ class WrDriveUploader {
       throw StateError('Drive API returned a file with no ID.');
     }
     return id;
+  }
+
+  Future<String> _idFor(File f) async =>
+      '${f.uri.pathSegments.last}:${await f.length()}';
+
+  /// True if [localFile] (by name + current size) has already been uploaded.
+  Future<bool> isUploaded(File localFile) async {
+    final prefs = await SharedPreferences.getInstance();
+    final set = prefs.getStringList(_kUploadedKey) ?? const <String>[];
+    return set.contains(await _idFor(localFile));
+  }
+
+  /// Uploads [localFile] only if it hasn't been uploaded before (tracked by
+  /// name + final size in SharedPreferences). Returns the Drive file id on a
+  /// fresh upload, or null if it was already uploaded.
+  Future<String?> uploadIfNew(File localFile, String remoteFileName) async {
+    final prefs = await SharedPreferences.getInstance();
+    final set = prefs.getStringList(_kUploadedKey) ?? <String>[];
+    final id = await _idFor(localFile);
+    if (set.contains(id)) return null;
+    final fileId = await uploadFile(localFile, remoteFileName);
+    set.add(id);
+    await prefs.setStringList(_kUploadedKey, set);
+    return fileId;
+  }
+
+  /// Uploads every file in [files] that hasn't been uploaded yet. Per-file
+  /// failures are swallowed (left for a later retry). Returns how many files
+  /// were freshly uploaded.
+  Future<int> syncPending(
+    List<File> files, {
+    required String Function(File) nameFor,
+    void Function(File file, String driveId)? onUploaded,
+  }) async {
+    var count = 0;
+    for (final f in files) {
+      try {
+        final id = await uploadIfNew(f, nameFor(f));
+        if (id != null) {
+          count++;
+          onUploaded?.call(f, id);
+        }
+      } catch (_) {
+        // Network / auth hiccup — leave this file for the next sync.
+      }
+    }
+    return count;
   }
 }

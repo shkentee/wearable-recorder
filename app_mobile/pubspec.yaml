@@ -38,6 +38,13 @@ dependencies:
   # Persist the last-connected BLE device address for auto-reconnect on startup.
   shared_preferences: ^2.3.0
 
+  # In-app Opus playback (D8): decode raw Opus frames -> PCM on-device.
+  # opus_flutter bundles prebuilt libopus (.so) for Android; opus_dart is the
+  # Dart API. just_audio plays the decoded PCM (wrapped as a temp WAV).
+  opus_dart: ^3.0.1
+  opus_flutter: ^3.0.3
+  just_audio: ^0.9.42
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

@@ -9,10 +9,14 @@ import '../services/wr_ble_device.dart';
 import '../services/wr_drive_uploader.dart';
 import '../services/wr_foreground_service.dart';
 import 'drive_files_page.dart';
+import 'recordings_page.dart';
 import 'storage_page.dart';
 
 /// SharedPreferences key used to persist the last-connected device address.
 const _kLastDeviceId = 'wr_last_device_id';
+
+/// SharedPreferences key for the auto-upload-on-disconnect toggle.
+const _kAutoUpload = 'wr_auto_upload';
 
 class DevicePage extends StatefulWidget {
   const DevicePage({
@@ -36,6 +40,8 @@ class _DevicePageState extends State<DevicePage> {
   int _lostPackets = 0;
   int? _batteryPct; // null until first Battery Service notify/read
   bool _uploading = false;
+  bool _autoUpload = true; // auto-upload completed recordings to Drive
+  bool _autoUploadBusy = false;
 
   WrDriveUploader get _uploader =>
       widget.uploaderOverride ?? WrDriveUploader();
@@ -48,6 +54,8 @@ class _DevicePageState extends State<DevicePage> {
       setState(() => _status = s.name);
       if (s == BluetoothConnectionState.disconnected) {
         WrForegroundService.stop().ignore();
+        // The session's dump file is now complete — auto-upload it.
+        _autoUploadSync();
       }
     });
     widget.device.packetCount.listen((n) {
@@ -71,7 +79,15 @@ class _DevicePageState extends State<DevicePage> {
       if (!mounted) return;
       setState(() => _batteryPct = pct);
     });
-    _connect();
+    _init();
+  }
+
+  Future<void> _init() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (mounted) {
+      setState(() => _autoUpload = prefs.getBool(_kAutoUpload) ?? true);
+    }
+    await _connect();
   }
 
   Future<void> _connect() async {
@@ -84,6 +100,38 @@ class _DevicePageState extends State<DevicePage> {
     } catch (e) {
       if (!mounted) return;
       setState(() => _status = 'error: $e');
+    }
+  }
+
+  /// Builds the Drive remote name from a local dump path:
+  /// `FF:94:..-<stamp>.bin` -> `FF-94-..-<stamp>.opus`.
+  String _remoteName(File f) => f.uri.pathSegments.last
+      .replaceAll(':', '-')
+      .replaceAll('.bin', '.opus');
+
+  /// On disconnect, auto-upload the recording from the session that just
+  /// ended (idempotent via the uploader's dedup). Only the just-finished file
+  /// is uploaded — historical recordings stay local unless uploaded manually
+  /// from the Recordings page.
+  Future<void> _autoUploadSync() async {
+    if (!_autoUpload || _autoUploadBusy) return;
+    _autoUploadBusy = true;
+    try {
+      // Flush/close the just-finished dump before reading it. (No-op for the
+      // BLE link if it's already down.)
+      await widget.device.disconnect();
+      final path = widget.device.lastDumpPath;
+      if (path == null) return;
+      final file = File(path);
+      if (!await file.exists() || await file.length() == 0) return;
+      final id = await _uploader.uploadIfNew(file, _remoteName(file));
+      if (id != null && mounted) {
+        _showSnackBar('Auto-uploaded recording to Drive');
+      }
+    } catch (_) {
+      // Best-effort; the file stays local and can be uploaded manually.
+    } finally {
+      _autoUploadBusy = false;
     }
   }
 
@@ -185,6 +233,16 @@ class _DevicePageState extends State<DevicePage> {
             ),
           ),
           IconButton(
+            icon: const Icon(Icons.library_music_outlined),
+            tooltip: 'Recordings (play)',
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => RecordingsPage(uploader: _uploader),
+              ),
+            ),
+          ),
+          IconButton(
             icon: const Icon(Icons.cloud_queue),
             tooltip: 'Drive recordings',
             onPressed: () => Navigator.push(
@@ -193,6 +251,24 @@ class _DevicePageState extends State<DevicePage> {
                 builder: (_) => DriveFilesPage(uploader: _uploader),
               ),
             ),
+          ),
+          PopupMenuButton<String>(
+            tooltip: 'Settings',
+            onSelected: (v) async {
+              if (v == 'auto_upload') {
+                final next = !_autoUpload;
+                final prefs = await SharedPreferences.getInstance();
+                await prefs.setBool(_kAutoUpload, next);
+                if (mounted) setState(() => _autoUpload = next);
+              }
+            },
+            itemBuilder: (_) => [
+              CheckedPopupMenuItem<String>(
+                value: 'auto_upload',
+                checked: _autoUpload,
+                child: const Text('Auto-upload to Drive'),
+              ),
+            ],
           ),
         ],
       ),
