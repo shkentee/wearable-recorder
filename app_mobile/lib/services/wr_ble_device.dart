@@ -306,6 +306,15 @@ class WrBleDevice {
     await c.write([on ? 1 : 0], withoutResponse: false);
   }
 
+  /// Tells the device to enter deep sleep (powers down; wakes on a button
+  /// press). Returns true if the command was sent. No-op on old firmware.
+  Future<bool> sleepDevice() async {
+    final c = _recControlChar();
+    if (c == null) return false;
+    await c.write([2], withoutResponse: false);
+    return true;
+  }
+
   Future<void> disconnect() async {
     await _notifySub?.cancel();
     _notifySub = null;

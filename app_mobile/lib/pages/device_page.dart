@@ -185,6 +185,36 @@ class _DevicePageState extends State<DevicePage> {
     }
   }
 
+  Future<void> _sleepDevice() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Sleep device?'),
+        content: const Text(
+            'The device powers down to save battery. Press its button to '
+            'wake it (it restarts and resumes recording).'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel')),
+          TextButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Sleep')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    try {
+      final sent = await widget.device.sleepDevice();
+      _showSnackBar(sent
+          ? 'Sleep command sent — device powering down'
+          : 'Sleep not supported by this firmware', isError: !sent);
+    } catch (_) {
+      // The link drops as the device powers off — expected.
+      _showSnackBar('Sleep command sent — device powering down');
+    }
+  }
+
   void _showSnackBar(String message, {bool isError = false}) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
@@ -262,6 +292,12 @@ class _DevicePageState extends State<DevicePage> {
               ),
             ),
           ),
+          if (_recording != null)
+            IconButton(
+              icon: const Icon(Icons.bedtime_outlined),
+              tooltip: 'Sleep device',
+              onPressed: _sleepDevice,
+            ),
           IconButton(
             icon: const Icon(Icons.settings_outlined),
             tooltip: 'Settings',
