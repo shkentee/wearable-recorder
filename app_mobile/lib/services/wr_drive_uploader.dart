@@ -355,6 +355,14 @@ class WrDriveUploader {
     return set.contains(await _idFor(localFile));
   }
 
+  /// True if any file with base name [name] has been uploaded (size-agnostic).
+  /// Lets the SD-sync skip re-fetching a completed chunk it already sent.
+  Future<bool> isUploadedByName(String name) async {
+    final prefs = await SharedPreferences.getInstance();
+    final set = prefs.getStringList(_kUploadedKey) ?? const <String>[];
+    return set.any((id) => id.startsWith('$name:'));
+  }
+
   /// Uploads [localFile] only if it hasn't been uploaded before (tracked by
   /// name + final size in SharedPreferences). Returns the Drive file id on a
   /// fresh upload, or null if it was already uploaded.

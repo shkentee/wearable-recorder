@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../services/wr_ble_device.dart';
 import '../services/wr_drive_uploader.dart';
 import '../services/wr_foreground_service.dart';
+import '../services/wr_sd_sync.dart';
 import 'drive_files_page.dart';
 import 'recordings_page.dart';
 import 'settings_page.dart';
@@ -43,8 +44,9 @@ class _DevicePageState extends State<DevicePage> {
   double _level = 0.0; // live mic level 0..1
   bool? _recording; // device SD recording on/off; null = unsupported firmware
   bool _uploading = false;
-  bool _autoUpload = true; // auto-upload completed recordings to Drive
-  bool _autoUploadBusy = false;
+  bool _autoUpload = true; // auto-sync completed SD chunks to Drive
+  WrSdSync? _sdSync;
+  String? _syncStatus; // last SD-sync event, shown in the UI
 
   WrDriveUploader get _uploader =>
       widget.uploaderOverride ?? WrDriveUploader();
@@ -57,8 +59,7 @@ class _DevicePageState extends State<DevicePage> {
       setState(() => _status = s.name);
       if (s == BluetoothConnectionState.disconnected) {
         WrForegroundService.stop().ignore();
-        // The session's dump file is now complete — auto-upload it.
-        _autoUploadSync();
+        _sdSync?.stop();
       }
     });
     widget.device.packetCount.listen((n) {
@@ -107,42 +108,26 @@ class _DevicePageState extends State<DevicePage> {
       // Reflect the device's current recording on/off state (if supported).
       final rec = await widget.device.readRecordingState();
       if (mounted) setState(() => _recording = rec);
+      // Start pulling completed SD chunks -> Drive for transcription.
+      _startSdSyncIfEnabled();
     } catch (e) {
       if (!mounted) return;
       setState(() => _status = 'error: $e');
     }
   }
 
-  /// Builds the Drive remote name from a local dump path:
-  /// `FF:94:..-<stamp>.bin` -> `FF-94-..-<stamp>.opus`.
-  String _remoteName(File f) => f.uri.pathSegments.last
-      .replaceAll(':', '-')
-      .replaceAll('.bin', '.opus');
-
-  /// On disconnect, auto-upload the recording from the session that just
-  /// ended (idempotent via the uploader's dedup). Only the just-finished file
-  /// is uploaded — historical recordings stay local unless uploaded manually
-  /// from the Recordings page.
-  Future<void> _autoUploadSync() async {
-    if (!_autoUpload || _autoUploadBusy) return;
-    _autoUploadBusy = true;
-    try {
-      // Flush/close the just-finished dump before reading it. (No-op for the
-      // BLE link if it's already down.)
-      await widget.device.disconnect();
-      final path = widget.device.lastDumpPath;
-      if (path == null) return;
-      final file = File(path);
-      if (!await file.exists() || await file.length() == 0) return;
-      final id = await _uploader.uploadIfNew(file, _remoteName(file));
-      if (id != null && mounted) {
-        _showSnackBar('Auto-uploaded recording to Drive');
-      }
-    } catch (_) {
-      // Best-effort; the file stays local and can be uploaded manually.
-    } finally {
-      _autoUploadBusy = false;
-    }
+  /// Starts the background SD-chunk -> Drive sync (if auto-upload is enabled).
+  /// The device records ~10-min chunks to SD; this fetches completed ones and
+  /// uploads them, so transcription gets near-real-time, loss-tolerant audio.
+  void _startSdSyncIfEnabled() {
+    _sdSync?.stop();
+    if (!_autoUpload) return;
+    final sync = WrSdSync(device: widget.device, uploader: _uploader);
+    sync.events.listen((msg) {
+      if (mounted) setState(() => _syncStatus = msg);
+    });
+    sync.start();
+    _sdSync = sync;
   }
 
   Future<void> _uploadToDriver() async {
@@ -227,6 +212,7 @@ class _DevicePageState extends State<DevicePage> {
 
   @override
   void dispose() {
+    _sdSync?.dispose();
     WrForegroundService.stop().ignore();
     widget.device.dispose();
     super.dispose();
@@ -308,11 +294,13 @@ class _DevicePageState extends State<DevicePage> {
                   builder: (_) => SettingsPage(uploader: _uploader),
                 ),
               );
-              // Re-read the auto-upload preference in case it changed.
+              // Re-read the auto-upload preference in case it changed, and
+              // start/stop the SD-chunk sync to match.
               final prefs = await SharedPreferences.getInstance();
               if (mounted) {
                 setState(
                     () => _autoUpload = prefs.getBool(_kAutoUpload) ?? true);
+                _startSdSyncIfEnabled();
               }
             },
           ),
@@ -389,10 +377,27 @@ class _DevicePageState extends State<DevicePage> {
               ),
             ],
             const Spacer(),
-            const Text(
-              'Phase 6 MVP: notify subscription + raw dump. Opus decode '
-              'runs offline on a paired PC.',
-              style: TextStyle(fontStyle: FontStyle.italic),
+            Row(
+              children: [
+                Icon(
+                  _autoUpload
+                      ? Icons.cloud_sync_outlined
+                      : Icons.cloud_off_outlined,
+                  size: 18,
+                  color: _autoUpload
+                      ? Theme.of(context).colorScheme.primary
+                      : Colors.grey,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    _autoUpload
+                        ? 'Drive auto-sync: ${_syncStatus ?? 'on'}'
+                        : 'Drive auto-sync: off',
+                    style: const TextStyle(fontSize: 13),
+                  ),
+                ),
+              ],
             ),
           ],
         ),
