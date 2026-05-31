@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../services/wr_drive_uploader.dart';
 import '../services/wr_local_recordings.dart';
@@ -32,6 +33,14 @@ class _RecordingsPageState extends State<RecordingsPage> {
   bool _isPlaying = false; // live play/pause state from the player
   double? _decodeProgress; // non-null while decoding
   final Set<String> _uploading = {};
+  Set<String> _uploadedIds = {}; // "<name>:<size>" of already-uploaded files
+  bool _uploadingAll = false;
+
+  // Playback position/duration/speed for the "now playing" bar.
+  Duration _position = Duration.zero;
+  Duration _duration = Duration.zero;
+  double _speed = 1.0;
+  static const _speeds = [1.0, 1.5, 2.0];
 
   @override
   void initState() {
@@ -46,10 +55,17 @@ class _RecordingsPageState extends State<RecordingsPage> {
         setState(() {
           _isPlaying = false;
           _playingPath = null;
+          _position = Duration.zero;
         });
       } else {
         setState(() => _isPlaying = s.playing);
       }
+    });
+    _player.positionStream.listen((p) {
+      if (mounted) setState(() => _position = p);
+    });
+    _player.durationStream.listen((d) {
+      if (mounted && d != null) setState(() => _duration = d);
     });
     _load();
   }
@@ -57,12 +73,18 @@ class _RecordingsPageState extends State<RecordingsPage> {
   Future<void> _load() async {
     setState(() => _loading = true);
     final recs = await WrLocalRecordings.list();
+    final prefs = await SharedPreferences.getInstance();
+    final ids = (prefs.getStringList('wr_uploaded_ids') ?? const <String>[]);
     if (!mounted) return;
     setState(() {
       _recs = recs;
+      _uploadedIds = ids.toSet();
       _loading = false;
     });
   }
+
+  bool _isUploaded(WrRecording rec) =>
+      _uploadedIds.contains('${rec.name}:${rec.sizeBytes}');
 
   String _remoteName(File f) => f.uri.pathSegments.last
       .replaceAll(':', '-')
@@ -117,6 +139,10 @@ class _RecordingsPageState extends State<RecordingsPage> {
     try {
       final id =
           await _uploader.uploadIfNew(rec.file, _remoteName(rec.file));
+      if (mounted) {
+        setState(
+            () => _uploadedIds.add('${rec.name}:${rec.sizeBytes}'));
+      }
       _snack(id == null
           ? 'Already uploaded.'
           : 'Uploaded to Drive (id: $id)');
@@ -125,6 +151,38 @@ class _RecordingsPageState extends State<RecordingsPage> {
     } finally {
       if (mounted) setState(() => _uploading.remove(rec.file.path));
     }
+  }
+
+  Future<void> _uploadAll() async {
+    final pending = _recs.where((r) => !_isUploaded(r)).toList();
+    if (pending.isEmpty) {
+      _snack('Everything is already uploaded.');
+      return;
+    }
+    setState(() => _uploadingAll = true);
+    try {
+      final n = await _uploader.syncPending(
+        pending.map((r) => r.file).toList(),
+        nameFor: _remoteName,
+        onUploaded: (f, _) {
+          final name = f.uri.pathSegments.last;
+          final len = f.lengthSync();
+          if (mounted) setState(() => _uploadedIds.add('$name:$len'));
+        },
+      );
+      _snack('Uploaded $n recording(s) to Drive.');
+    } catch (e) {
+      _snack('Upload all failed: $e', error: true);
+    } finally {
+      if (mounted) setState(() => _uploadingAll = false);
+    }
+  }
+
+  Future<void> _cycleSpeed() async {
+    final i = _speeds.indexOf(_speed);
+    final next = _speeds[(i + 1) % _speeds.length];
+    await _player.setSpeed(next);
+    if (mounted) setState(() => _speed = next);
   }
 
   Future<void> _delete(WrRecording rec) async {
@@ -189,6 +247,16 @@ class _RecordingsPageState extends State<RecordingsPage> {
         title: const Text('Recordings'),
         actions: [
           IconButton(
+            icon: _uploadingAll
+                ? const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2))
+                : const Icon(Icons.cloud_upload),
+            tooltip: 'Upload all to Drive',
+            onPressed: (_loading || _uploadingAll) ? null : _uploadAll,
+          ),
+          IconButton(
             icon: const Icon(Icons.refresh),
             tooltip: 'Refresh',
             onPressed: _loading ? null : _load,
@@ -204,6 +272,60 @@ class _RecordingsPageState extends State<RecordingsPage> {
                   separatorBuilder: (_, __) => const Divider(height: 1),
                   itemBuilder: (context, i) => _tile(_recs[i]),
                 ),
+      bottomNavigationBar:
+          (_playingPath != null && _decodeProgress == null)
+              ? _nowPlayingBar()
+              : null,
+    );
+  }
+
+  String _fmtPos(Duration d) {
+    String two(int x) => x.toString().padLeft(2, '0');
+    final m = d.inMinutes;
+    final s = d.inSeconds % 60;
+    return '${two(m)}:${two(s)}';
+  }
+
+  Widget _nowPlayingBar() {
+    final maxMs = _duration.inMilliseconds.toDouble();
+    final posMs = _position.inMilliseconds.clamp(0, _duration.inMilliseconds);
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        child: Row(
+          children: [
+            IconButton(
+              iconSize: 36,
+              icon: Icon(_isPlaying
+                  ? Icons.pause_circle_filled
+                  : Icons.play_circle_fill),
+              onPressed: () {
+                if (_isPlaying) {
+                  unawaited(_player.pause());
+                } else {
+                  unawaited(_player.play());
+                }
+              },
+            ),
+            Text(_fmtPos(_position)),
+            Expanded(
+              child: Slider(
+                value: maxMs <= 0 ? 0 : posMs.toDouble(),
+                max: maxMs <= 0 ? 1 : maxMs,
+                onChanged: maxMs <= 0
+                    ? null
+                    : (v) => unawaited(
+                        _player.seek(Duration(milliseconds: v.round()))),
+              ),
+            ),
+            Text(_fmtPos(_duration)),
+            TextButton(
+              onPressed: _cycleSpeed,
+              child: Text('${_speed}x'),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -267,8 +389,15 @@ class _RecordingsPageState extends State<RecordingsPage> {
                   height: 20,
                   child: CircularProgressIndicator(strokeWidth: 2))
               : IconButton(
-                  icon: const Icon(Icons.cloud_upload_outlined),
-                  tooltip: 'Upload to Drive',
+                  icon: Icon(
+                    _isUploaded(rec)
+                        ? Icons.cloud_done
+                        : Icons.cloud_upload_outlined,
+                    color: _isUploaded(rec) ? Colors.green : null,
+                  ),
+                  tooltip: _isUploaded(rec)
+                      ? 'Uploaded · tap to re-upload'
+                      : 'Upload to Drive',
                   onPressed: () => _upload(rec),
                 ),
           IconButton(

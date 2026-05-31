@@ -10,6 +10,7 @@ import '../services/wr_drive_uploader.dart';
 import '../services/wr_foreground_service.dart';
 import 'drive_files_page.dart';
 import 'recordings_page.dart';
+import 'settings_page.dart';
 import 'storage_page.dart';
 
 /// SharedPreferences key used to persist the last-connected device address.
@@ -252,23 +253,23 @@ class _DevicePageState extends State<DevicePage> {
               ),
             ),
           ),
-          PopupMenuButton<String>(
+          IconButton(
+            icon: const Icon(Icons.settings_outlined),
             tooltip: 'Settings',
-            onSelected: (v) async {
-              if (v == 'auto_upload') {
-                final next = !_autoUpload;
-                final prefs = await SharedPreferences.getInstance();
-                await prefs.setBool(_kAutoUpload, next);
-                if (mounted) setState(() => _autoUpload = next);
+            onPressed: () async {
+              await Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => SettingsPage(uploader: _uploader),
+                ),
+              );
+              // Re-read the auto-upload preference in case it changed.
+              final prefs = await SharedPreferences.getInstance();
+              if (mounted) {
+                setState(
+                    () => _autoUpload = prefs.getBool(_kAutoUpload) ?? true);
               }
             },
-            itemBuilder: (_) => [
-              CheckedPopupMenuItem<String>(
-                value: 'auto_upload',
-                checked: _autoUpload,
-                child: const Text('Auto-upload to Drive'),
-              ),
-            ],
           ),
         ],
       ),

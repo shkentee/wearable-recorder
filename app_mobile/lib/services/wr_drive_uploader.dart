@@ -12,8 +12,18 @@ const _kUploadedKey = 'wr_uploaded_ids';
 /// MIME type used when uploading Opus-in-OGG dump files to Drive.
 const _kOpusMime = 'audio/ogg; codecs=opus';
 
-/// The Drive folder that all recordings are stored under.
+/// The default Drive folder that recordings are stored under (user-overridable
+/// via the [_kFolderKey] preference, set on the Settings page).
 const _kFolderName = 'wearable-recordings';
+
+/// SharedPreferences key holding the user-chosen destination folder name
+/// (shown in Settings; also the create-by-name fallback).
+const _kFolderKey = 'wr_drive_folder';
+
+/// SharedPreferences key holding the user-chosen destination folder ID. When
+/// set, uploads target this exact folder (picked from the folder chooser),
+/// bypassing name-based lookup.
+const _kFolderIdKey = 'wr_drive_folder_id';
 
 /// Drive API scope that allows creating / uploading files only.
 const _kDriveScope = drive.DriveApi.driveFileScope;
@@ -80,6 +90,9 @@ class WrDriveUploader {
   // Cache the folder ID so repeated uploads in one session skip the search.
   String? _cachedFolderId;
 
+  // Cache of folder metadata (id -> File) for resolving ancestor paths.
+  final Map<String, drive.File> _metaCache = {};
+
   /// Signs in (or re-uses an existing session) and returns an authenticated
   /// [drive.DriveApi] instance backed by a [_GoogleAuthClient].
   ///
@@ -101,16 +114,113 @@ class WrDriveUploader {
     return drive.DriveApi(client);
   }
 
-  /// Returns the Drive folder ID for [_kFolderName], creating it if needed.
-  ///
-  /// The result is cached for the lifetime of this [WrDriveUploader] instance.
+  /// The configured destination folder name (user-overridable in Settings),
+  /// falling back to [_kFolderName].
+  Future<String> folderName() async {
+    final prefs = await SharedPreferences.getInstance();
+    final n = prefs.getString(_kFolderKey)?.trim();
+    return (n == null || n.isEmpty) ? _kFolderName : n;
+  }
+
+  /// Lists the child folders (id + name) directly under [parentId] — use
+  /// `'root'` for My Drive — alphabetically. Powers the hierarchical folder
+  /// chooser so the app mirrors Drive's own folder tree.
+  Future<List<drive.File>> listSubfolders(String parentId) async {
+    final api = await _buildApi();
+    final result = await api.files.list(
+      q: "'$parentId' in parents and "
+          "mimeType='application/vnd.google-apps.folder' and trashed=false",
+      spaces: 'drive',
+      $fields: 'files(id,name)',
+      orderBy: 'name',
+      pageSize: 200,
+    );
+    return result.files ?? [];
+  }
+
+  /// Searches ALL of the user's Drive folders by name (case-insensitive
+  /// substring). Unlike [listSubfolders], this spans the whole Drive — My
+  /// Drive, "Computers" (Drive-for-desktop synced folders), and shared items —
+  /// so the user can target a PC-synced folder that isn't reachable by walking
+  /// the My-Drive tree. Returns id + name (+ parents for disambiguation).
+  Future<List<drive.File>> searchFolders(String query) async {
+    final api = await _buildApi();
+    final escaped = query.replaceAll("'", r"\'");
+    final result = await api.files.list(
+      q: "name contains '$escaped' and "
+          "mimeType='application/vnd.google-apps.folder' and trashed=false",
+      spaces: 'drive',
+      $fields: 'files(id,name,parents)',
+      orderBy: 'name',
+      pageSize: 100,
+    );
+    return result.files ?? [];
+  }
+
+  /// Builds a human-readable location for a folder from its [parents], e.g.
+  /// "My Drive › Projects › 2026", or "MyLaptop › Documents" for a Computers
+  /// (Drive-for-desktop) folder. Resolves ancestor names via the API with a
+  /// small cache. Used to disambiguate same-named folders in search results.
+  Future<String> folderPath(List<String>? parents) async {
+    if (parents == null || parents.isEmpty) return 'My Drive';
+    final api = await _buildApi();
+    final names = <String>[];
+    List<String>? current = parents;
+    var guard = 0;
+    while (current != null && current.isNotEmpty && guard++ < 12) {
+      final pid = current.first;
+      if (pid == 'root') {
+        names.add('My Drive');
+        break;
+      }
+      var meta = _metaCache[pid];
+      if (meta == null) {
+        meta = await api.files.get(pid, $fields: 'id,name,parents')
+            as drive.File;
+        _metaCache[pid] = meta;
+      }
+      names.add(meta.name ?? '…');
+      current = meta.parents;
+    }
+    return names.reversed.join(' › ');
+  }
+
+  /// Creates a new Drive folder (optionally under [parentId]) and returns it
+  /// (id + name populated).
+  Future<drive.File> createFolder(String name, {String? parentId}) async {
+    final api = await _buildApi();
+    final folder = drive.File()
+      ..name = name
+      ..mimeType = 'application/vnd.google-apps.folder';
+    if (parentId != null && parentId != 'root') folder.parents = [parentId];
+    return api.files.create(folder, $fields: 'id,name');
+  }
+
+  /// The exact destination folder ID chosen in Settings, or null if the user
+  /// hasn't picked one (then we fall back to resolving [folderName] by name).
+  Future<String?> _configuredFolderId() async {
+    final prefs = await SharedPreferences.getInstance();
+    final id = prefs.getString(_kFolderIdKey)?.trim();
+    return (id == null || id.isEmpty) ? null : id;
+  }
+
+  /// Returns the Drive folder ID for the configured folder, creating it if
+  /// needed. Cached for the lifetime of this [WrDriveUploader] instance.
   Future<String> _ensureFolder(drive.DriveApi api) async {
     final cached = _cachedFolderId;
     if (cached != null) return cached;
 
+    // Prefer an explicitly-picked folder ID (from the folder chooser).
+    final pickedId = await _configuredFolderId();
+    if (pickedId != null) {
+      _cachedFolderId = pickedId;
+      return pickedId;
+    }
+
+    final name = await folderName();
     // Search for an existing folder with the expected name owned by the user.
-    const query =
-        "mimeType='application/vnd.google-apps.folder' and name='$_kFolderName' and trashed=false";
+    final query =
+        "mimeType='application/vnd.google-apps.folder' and name='$name' and trashed=false";
     final result = await api.files.list(
       q: query,
       spaces: 'drive',
@@ -125,22 +235,23 @@ class WrDriveUploader {
 
     // Folder not found — create it.
     final folder = drive.File()
-      ..name = _kFolderName
+      ..name = name
       ..mimeType = 'application/vnd.google-apps.folder';
     final created = await api.files.create(folder);
     _cachedFolderId = created.id!;
     return _cachedFolderId!;
   }
 
-  /// Lists all files in the "wearable-recordings/" Drive folder, most-recently
-  /// modified first. Returns an empty list if the folder does not exist yet.
+  /// Lists all files in the configured Drive folder, most-recently modified
+  /// first. Returns an empty list if the folder does not exist yet.
   Future<List<drive.File>> listFiles() async {
     final api = await _buildApi();
 
-    String? folderId = _cachedFolderId;
+    String? folderId = _cachedFolderId ?? await _configuredFolderId();
     if (folderId == null) {
-      const query =
-          "mimeType='application/vnd.google-apps.folder' and name='$_kFolderName' and trashed=false";
+      final name = await folderName();
+      final query =
+          "mimeType='application/vnd.google-apps.folder' and name='$name' and trashed=false";
       final result = await api.files.list(
         q: query,
         spaces: 'drive',
@@ -207,6 +318,31 @@ class WrDriveUploader {
       throw StateError('Drive API returned a file with no ID.');
     }
     return id;
+  }
+
+  /// Email of the currently-signed-in Google account (silent sign-in), or null
+  /// if no account is connected yet.
+  Future<String?> currentEmail() async {
+    if (_apiOverride != null) return null;
+    final acct =
+        _googleSignIn.currentUser ?? await _googleSignIn.signInSilently();
+    return acct?.email;
+  }
+
+  /// Interactive account picker: signs out then signs in so Google shows its
+  /// account chooser. Returns the chosen account's email (null if cancelled).
+  /// Resets the cached folder id since a different account = a different Drive.
+  Future<String?> chooseAccount() async {
+    await _googleSignIn.signOut();
+    final acct = await _googleSignIn.signIn();
+    _cachedFolderId = null;
+    return acct?.email;
+  }
+
+  /// Disconnects the current Google account.
+  Future<void> signOut() async {
+    await _googleSignIn.signOut();
+    _cachedFolderId = null;
   }
 
   Future<String> _idFor(File f) async =>
