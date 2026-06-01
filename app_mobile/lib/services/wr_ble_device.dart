@@ -306,6 +306,43 @@ class WrBleDevice {
     await c.write([on ? 1 : 0], withoutResponse: false);
   }
 
+  /// Finds the mic-gain characteristic (D10), or null on firmware that doesn't
+  /// expose it.
+  BluetoothCharacteristic? _gainChar() {
+    final svcs = _discoveredServices;
+    if (svcs == null) return null;
+    try {
+      final svc = svcs.firstWhere(
+          (s) => s.serviceUuid == Guid(WrUuids.gainService));
+      return svc.characteristics.firstWhere(
+          (c) => c.characteristicUuid == Guid(WrUuids.gainChar));
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Reads the current capture gain in Q4 fixed point (16 = 1.0x). Returns null
+  /// if the firmware doesn't support gain control (older builds).
+  Future<int?> readGainQ4() async {
+    final c = _gainChar();
+    if (c == null) return null;
+    try {
+      final v = await c.read();
+      return v.isNotEmpty ? v[0] : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Sets the capture gain in Q4 fixed point (16 = 1.0x). Clamped to [4, 255].
+  /// No-op if the firmware doesn't expose gain control.
+  Future<void> setGainQ4(int gainQ4) async {
+    final c = _gainChar();
+    if (c == null) return;
+    final g = gainQ4 < 4 ? 4 : (gainQ4 > 255 ? 255 : gainQ4);
+    await c.write([g], withoutResponse: false);
+  }
+
   /// Tells the device to enter deep sleep (powers down; wakes on a button
   /// press). Returns true if the command was sent. No-op on old firmware.
   Future<bool> sleepDevice() async {

@@ -43,6 +43,7 @@ class _DevicePageState extends State<DevicePage> {
   int? _batteryPct; // null until first Battery Service notify/read
   double _level = 0.0; // live mic level 0..1
   bool? _recording; // device SD recording on/off; null = unsupported firmware
+  int? _gainQ4; // mic capture gain, Q4 (16 = 1.0x); null = unsupported firmware
   bool _uploading = false;
   bool _autoUpload = true; // auto-sync completed SD chunks to Drive
   WrSdSync? _sdSync;
@@ -108,6 +109,9 @@ class _DevicePageState extends State<DevicePage> {
       // Reflect the device's current recording on/off state (if supported).
       final rec = await widget.device.readRecordingState();
       if (mounted) setState(() => _recording = rec);
+      // Reflect the device's current mic gain (if supported).
+      final gain = await widget.device.readGainQ4();
+      if (mounted) setState(() => _gainQ4 = gain);
       // Start pulling completed SD chunks -> Drive for transcription.
       _startSdSyncIfEnabled();
     } catch (e) {
@@ -347,6 +351,35 @@ class _DevicePageState extends State<DevicePage> {
                 ),
               ),
             ),
+            if (_gainQ4 != null) ...[
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  const Icon(Icons.tune, size: 20),
+                  const SizedBox(width: 8),
+                  const Text('Mic gain'),
+                  const Spacer(),
+                  Text('${(_gainQ4! / 16).toStringAsFixed(2)}x',
+                      style: Theme.of(context).textTheme.titleMedium),
+                ],
+              ),
+              Slider(
+                min: 4, // 0.25x
+                max: 128, // 8.0x
+                divisions: 31, // steps of 4 (0.25x)
+                value: _gainQ4!.clamp(4, 128).toDouble(),
+                label: '${(_gainQ4! / 16).toStringAsFixed(2)}x',
+                onChanged: (v) => setState(() => _gainQ4 = v.round()),
+                onChangeEnd: (v) async {
+                  final g = v.round();
+                  try {
+                    await widget.device.setGainQ4(g);
+                  } catch (e) {
+                    _showSnackBar('Failed to set gain: $e', isError: true);
+                  }
+                },
+              ),
+            ],
             if (_recording != null) ...[
               const SizedBox(height: 20),
               Card(

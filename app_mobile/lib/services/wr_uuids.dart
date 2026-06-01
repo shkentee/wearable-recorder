@@ -23,6 +23,11 @@ class WrUuids {
   static const String recControlService = '19b10006-e8f2-537e-4f6c-d104768a1214';
   static const String recControlChar    = '19b10006-e8f2-537e-4f6c-d104768a1214';
 
+  // Mic gain control (D10): READ/WRITE 1 byte, capture gain in Q4 fixed point
+  // (16 = 1.0x, 32 = 2.0x, ...). Single-characteristic service.
+  static const String gainService = '19b10007-e8f2-537e-4f6c-d104768a1214';
+  static const String gainChar    = '19b10007-e8f2-537e-4f6c-d104768a1214';
+
   // Storage data stream service (chunk fetch).
   static const String storageService     = '30295780-4301-eabd-2904-2849adfeae43';
   static const String storageStream      = '30295781-4301-eabd-2904-2849adfeae43';

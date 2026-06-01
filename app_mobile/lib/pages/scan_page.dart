@@ -13,7 +13,7 @@ import 'device_page.dart';
 const _kLastDeviceId = 'wr_last_device_id';
 
 /// How long auto-connect waits before giving up and showing the normal list.
-const _kAutoConnectTimeout = Duration(seconds: 10);
+const _kAutoConnectTimeout = Duration(seconds: 30);
 
 class ScanPage extends StatefulWidget {
   /// [scannerFactory] is an optional dependency-injection seam used by
