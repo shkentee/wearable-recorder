@@ -49,6 +49,10 @@ class WrBleDevice {
   WrPacketSink? _sink;
   String? _lastDumpPath;
 
+  // Live audio characteristic (19b10001). Subscribed on demand, not on connect.
+  BluetoothCharacteristic? _audioDataChar;
+  bool _liveMonitor = false;
+
   /// Filesystem path of the dump file for the current/most-recent session,
   /// or null if no recording has started. Survives [disconnect] so callers
   /// can auto-upload the just-finished file.
@@ -120,10 +124,14 @@ class WrBleDevice {
       orElse: () =>
           throw StateError('audioData ${WrUuids.audioData} not found'),
     );
-    _sink = _injectedSink ?? await _defaultSink();
-    _lastDumpPath = _sink?.file.path;
-    await dataChar.setNotifyValue(true);
-    _notifySub = dataChar.lastValueStream.listen(_onPacket);
+    _audioDataChar = dataChar;
+    // Live audio is OFF by default to save power: continuous BLE audio
+    // notifications are a major battery drain and the SD-chunk sync doesn't
+    // need them. The UI turns it on with setLiveMonitor() when the user wants
+    // the mic-level meter. Tests that inject a sink keep the old behaviour.
+    if (_injectedSink != null) {
+      await setLiveMonitor(true);
+    }
     // D7: send current epoch so firmware uses wall-clock filenames.
     await _trySendTimeSync(services);
     // Battery Service: subscribe for level updates (best-effort).
@@ -152,6 +160,35 @@ class WrBleDevice {
       }
     } catch (_) {
       // Firmware without Battery Service (plain omi builds) — continue.
+    }
+  }
+
+  /// Whether the live audio stream (mic-level meter + packet dump) is active.
+  bool get liveMonitor => _liveMonitor;
+
+  /// Subscribes to / unsubscribes from the live audio characteristic on demand.
+  /// OFF by default to save power — continuous BLE audio notifications are a
+  /// major battery drain, and the SD-chunk → Drive sync does not need them.
+  /// The BLE connection itself stays up either way (SD sync uses it).
+  Future<void> setLiveMonitor(bool on) async {
+    final c = _audioDataChar;
+    if (c == null || on == _liveMonitor) return;
+    if (on) {
+      _sink ??= _injectedSink ?? await _defaultSink();
+      _lastDumpPath = _sink?.file.path;
+      await c.setNotifyValue(true);
+      _notifySub = c.lastValueStream.listen(_onPacket);
+      _liveMonitor = true;
+    } else {
+      await _notifySub?.cancel();
+      _notifySub = null;
+      try {
+        await c.setNotifyValue(false);
+      } catch (_) {
+        // Best-effort; link may be dropping.
+      }
+      _liveMonitor = false;
+      if (!_audioLevel.isClosed) _audioLevel.add(0.0);
     }
   }
 
@@ -355,6 +392,8 @@ class WrBleDevice {
   Future<void> disconnect() async {
     await _notifySub?.cancel();
     _notifySub = null;
+    _liveMonitor = false;
+    _audioDataChar = null;
     await _batterySub?.cancel();
     _batterySub = null;
     await _stateSub?.cancel();

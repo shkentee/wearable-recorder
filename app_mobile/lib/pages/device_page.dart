@@ -42,6 +42,7 @@ class _DevicePageState extends State<DevicePage> {
   int _lostPackets = 0;
   int? _batteryPct; // null until first Battery Service notify/read
   double _level = 0.0; // live mic level 0..1
+  bool _liveMonitor = false; // live audio subscription (off by default; power)
   bool? _recording; // device SD recording on/off; null = unsupported firmware
   int? _gainQ4; // mic capture gain, Q4 (16 = 1.0x); null = unsupported firmware
   bool _uploading = false;
@@ -328,18 +329,33 @@ class _DevicePageState extends State<DevicePage> {
             Text('Lost: $_lostPackets',
                 style: Theme.of(context).textTheme.titleMedium),
             const SizedBox(height: 24),
-            const Row(
+            Row(
               children: [
-                Icon(Icons.mic, size: 20),
-                SizedBox(width: 8),
-                Text('Mic level'),
+                const Icon(Icons.mic, size: 20),
+                const SizedBox(width: 8),
+                const Text('Mic level'),
+                const Spacer(),
+                const Text('Live monitor',
+                    style: TextStyle(fontSize: 12, color: Colors.grey)),
+                Switch(
+                  value: _liveMonitor,
+                  onChanged: (v) async {
+                    setState(() {
+                      _liveMonitor = v;
+                      if (!v) _level = 0.0;
+                    });
+                    try {
+                      await widget.device.setLiveMonitor(v);
+                    } catch (_) {}
+                  },
+                ),
               ],
             ),
             const SizedBox(height: 6),
             ClipRRect(
               borderRadius: BorderRadius.circular(6),
               child: LinearProgressIndicator(
-                value: _level,
+                value: _liveMonitor ? _level : 0.0,
                 minHeight: 16,
                 backgroundColor: Colors.grey.shade300,
                 valueColor: AlwaysStoppedAnimation<Color>(
@@ -351,6 +367,14 @@ class _DevicePageState extends State<DevicePage> {
                 ),
               ),
             ),
+            if (!_liveMonitor)
+              const Padding(
+                padding: EdgeInsets.only(top: 4),
+                child: Text(
+                  'Off — enable briefly to check the mic (saves battery)',
+                  style: TextStyle(fontSize: 11, color: Colors.grey),
+                ),
+              ),
             if (_gainQ4 != null) ...[
               const SizedBox(height: 16),
               Row(
