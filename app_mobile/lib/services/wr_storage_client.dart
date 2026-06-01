@@ -7,13 +7,19 @@ import 'wr_uuids.dart';
 
 // Protocol byte constants (mirror of wr_storage_service.c)
 const _cmdList = 0x00;
-const _cmdFetch = 0x01;
+const _cmdFetch = 0x01; // [0x01][4B offset LE][4B length LE][filename]
+const _cmdStatus = 0x02; // [0x02] -> NOTIF_STATUS
 const _cmdAbort = 0xFF;
 
 const _notifFileEntry = 0x01;
 const _notifData = 0x02;
 const _notifEnd = 0x03;
+const _notifFileSize = 0x04; // [4B committed size LE]
+const _notifStatus = 0x05; // [4B committed size LE][basename]
 const _notifError = 0xFF;
+
+List<int> _le32(int v) =>
+    [v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF, (v >> 24) & 0xFF];
 
 /// BLE client for the wearable-recorder Storage GATT service.
 ///
@@ -170,7 +176,8 @@ class WrStorageSession {
     });
 
     resetWatchdog();
-    await _ctrl.write([_cmdFetch, ...filename.codeUnits],
+    // [0x01][offset=0][length=0 -> to EOF][filename]
+    await _ctrl.write([_cmdFetch, ..._le32(0), ..._le32(0), ...filename.codeUnits],
         withoutResponse: true);
     try {
       await completer.future;
@@ -186,6 +193,115 @@ class WrStorageSession {
       offset += chunk.length;
     }
     return result;
+  }
+
+  /// Queries the current (growing) recording file and its committed size.
+  ///
+  /// Returns null if the device isn't recording / has nothing yet, or on a
+  /// firmware too old to support CMD_STATUS (no NOTIF_STATUS arrives → timeout
+  /// → null). Used by the omi-style incremental sync.
+  Future<({String name, int size})?> status({
+    Duration timeout = const Duration(seconds: 8),
+  }) async {
+    final completer = Completer<({String name, int size})?>();
+
+    _sub?.cancel();
+    _sub = _stream.onValueReceived.listen((data) {
+      if (data.isEmpty) return;
+      if (data[0] == _notifStatus && data.length >= 5) {
+        final size = data[1] | (data[2] << 8) | (data[3] << 16) | (data[4] << 24);
+        final name = data.length > 5
+            ? String.fromCharCodes(data.sublist(5))
+            : '';
+        if (!completer.isCompleted) {
+          completer.complete(name.isEmpty ? null : (name: name, size: size));
+        }
+      } else if (data[0] == _notifError) {
+        if (!completer.isCompleted) completer.complete(null);
+      }
+    });
+
+    await _ctrl.write([_cmdStatus], withoutResponse: true);
+    try {
+      return await completer.future.timeout(timeout);
+    } on TimeoutException {
+      return null;
+    }
+  }
+
+  /// Fetches a bounded window [offset, offset+length) of [filename].
+  ///
+  /// Reading in small windows (e.g. 64 KB) is the reliable transfer pattern —
+  /// a single multi-MB fetch can stall/hang the BLE link. Returns the bytes
+  /// actually read (may be shorter than [length] if EOF/committed size is
+  /// reached). The device also reports the file's total committed size via
+  /// [_notifFileSize]; that value is returned in [committedSize].
+  Future<({Uint8List bytes, int committedSize})> fetchWindow(
+    String filename,
+    int offset,
+    int length, {
+    Duration idleTimeout = const Duration(seconds: 15),
+  }) async {
+    final chunks = <List<int>>[];
+    int totalBytes = 0;
+    int committed = 0;
+    final completer = Completer<void>();
+
+    Timer? watchdog;
+    void resetWatchdog() {
+      watchdog?.cancel();
+      watchdog = Timer(idleTimeout, () {
+        if (!completer.isCompleted) {
+          completer.completeError(TimeoutException(
+              'window fetch stalled: no data for ${idleTimeout.inSeconds}s '
+              'after $totalBytes bytes'));
+        }
+      });
+    }
+
+    _sub?.cancel();
+    _sub = _stream.onValueReceived.listen((data) {
+      if (data.isEmpty) return;
+      resetWatchdog();
+      switch (data[0]) {
+        case _notifFileSize:
+          if (data.length >= 5) {
+            committed =
+                data[1] | (data[2] << 8) | (data[3] << 16) | (data[4] << 24);
+          }
+        case _notifData:
+          if (data.length > 1) {
+            final payload = data.sublist(1);
+            chunks.add(payload);
+            totalBytes += payload.length;
+          }
+        case _notifEnd:
+          if (!completer.isCompleted) completer.complete();
+        case _notifError:
+          if (!completer.isCompleted) {
+            completer.completeError(
+                StateError('Storage error fetching $filename @$offset'));
+          }
+      }
+    });
+
+    resetWatchdog();
+    await _ctrl.write(
+        [_cmdFetch, ..._le32(offset), ..._le32(length), ...filename.codeUnits],
+        withoutResponse: true);
+    try {
+      await completer.future;
+    } finally {
+      watchdog?.cancel();
+    }
+
+    final result = Uint8List(totalBytes);
+    var o = 0;
+    for (final chunk in chunks) {
+      result.setRange(o, o + chunk.length, chunk);
+      o += chunk.length;
+    }
+    return (bytes: result, committedSize: committed);
   }
 
   /// Sends an ABORT command and cancels the current subscription.

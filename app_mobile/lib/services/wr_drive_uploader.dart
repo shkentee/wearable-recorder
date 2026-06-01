@@ -320,6 +320,54 @@ class WrDriveUploader {
     return id;
   }
 
+  // Cache of remote name -> Drive file id, so the omi-style incremental sync
+  // updates the same session file in place instead of creating duplicates.
+  final Map<String, String> _fileIdByName = {};
+
+  /// Creates the Drive file [remoteFileName] if it doesn't exist, or REPLACES
+  /// its content if it does. Used by the omi-style sync: one growing file per
+  /// recording session, updated in place (keeps the Drive file count low).
+  /// Returns the Drive file id.
+  Future<String> uploadOrUpdate(File localFile, String remoteFileName) async {
+    final api = await _buildApi();
+    final folderId = await _ensureFolder(api);
+
+    String? fileId = _fileIdByName[remoteFileName];
+    if (fileId == null) {
+      final escaped = remoteFileName.replaceAll("'", r"\'");
+      final res = await api.files.list(
+        q: "'$folderId' in parents and name='$escaped' and trashed=false",
+        spaces: 'drive',
+        $fields: 'files(id)',
+      );
+      final found = res.files;
+      if (found != null && found.isNotEmpty) fileId = found.first.id;
+    }
+
+    final media = drive.Media(
+      localFile.openRead(),
+      await localFile.length(),
+      contentType: _kOpusMime,
+    );
+
+    if (fileId != null) {
+      await api.files.update(drive.File(), fileId, uploadMedia: media);
+      _fileIdByName[remoteFileName] = fileId;
+      return fileId;
+    }
+
+    final meta = drive.File()
+      ..name = remoteFileName
+      ..parents = [folderId];
+    final created = await api.files.create(meta, uploadMedia: media);
+    final id = created.id;
+    if (id == null) {
+      throw StateError('Drive API returned a file with no ID.');
+    }
+    _fileIdByName[remoteFileName] = id;
+    return id;
+  }
+
   /// Email of the currently-signed-in Google account (silent sign-in), or null
   /// if no account is connected yet.
   Future<String?> currentEmail() async {
