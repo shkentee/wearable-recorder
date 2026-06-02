@@ -164,8 +164,9 @@ class WrSdSync {
   }
 
   /// Cuts and uploads every full chunk in [_pending]. With [force], also emits
-  /// a final shorter chunk for the remaining bytes (session end).
-  Future<void> _flushPending({bool force = false}) async {
+  /// a final shorter chunk for the remaining bytes (session end). Returns true
+  /// if any chunk was emitted (so the caller can checkpoint promptly).
+  Future<bool> _flushPending({bool force = false}) async {
     var buf = _pending.toBytes();
     var changed = false;
     while (true) {
@@ -183,6 +184,7 @@ class WrSdSync {
     if (changed) {
       _pending = BytesBuilder(copy: false)..add(buf);
     }
+    return changed;
   }
 
   // ---- main loop --------------------------------------------------------
@@ -218,18 +220,22 @@ class WrSdSync {
       }
 
       int pulled = 0;
+      int windows = 0;
       while (_offset < committed && pulled < _maxBytesPerTick) {
         final res = await session.fetchWindow(name, _offset, _window);
         if (res.bytes.isEmpty) break;
         _pending.add(res.bytes);
         _offset += res.bytes.length;
         pulled += res.bytes.length;
-        // Cut + upload any complete chunks AS data arrives, and checkpoint
-        // progress every window — otherwise a large backlog would pull MBs
-        // before emitting anything (and lose progress on interruption).
-        await _flushPending();
-        await _persist();
+        windows++;
+        // Cut + upload any complete chunks AS data arrives so a backlog
+        // streams out instead of buffering MBs first. Checkpoint after a cut
+        // or every 8 windows — persisting the (up to chunk-sized) pending
+        // buffer every single window throttled throughput below real-time.
+        final cut = await _flushPending();
+        if (cut || (windows % 8) == 0) await _persist();
       }
+      await _persist();
 
       if (pulled > 0) {
         _events.add('synced +${pulled}B of $name @$_offset/$committed');
