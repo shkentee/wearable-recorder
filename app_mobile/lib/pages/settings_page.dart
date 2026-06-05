@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../main.dart' show themeModeNotifier, setThemeMode, themeModeLabelJa;
 import '../services/wr_drive_uploader.dart';
+import '../services/wr_sync_schedule.dart';
 
 /// SharedPreferences keys (kept in sync with device_page.dart / uploader).
 const _kAutoUpload = 'wr_auto_upload';
@@ -30,6 +32,7 @@ class _SettingsPageState extends State<SettingsPage> {
   bool _autoUpload = true;
   bool _loadingEmail = true;
   bool _busy = false;
+  SyncSchedule _schedule = const SyncSchedule();
 
   @override
   void initState() {
@@ -45,6 +48,8 @@ class _SettingsPageState extends State<SettingsPage> {
         _folderName = prefs.getString(_kFolderKey) ?? _kDefaultFolder;
       });
     }
+    final sched = await SyncSchedule.load();
+    if (mounted) setState(() => _schedule = sched);
     try {
       final email = await _uploader.currentEmail();
       if (mounted) setState(() => _email = email);
@@ -60,9 +65,9 @@ class _SettingsPageState extends State<SettingsPage> {
     try {
       final email = await _uploader.chooseAccount();
       if (mounted) setState(() => _email = email);
-      _snack(email == null ? 'Sign-in cancelled' : 'Signed in as $email');
+      _snack(email == null ? 'サインインをキャンセルしました' : '$email でサインインしました');
     } catch (e) {
-      _snack('Sign-in failed: $e', error: true);
+      _snack('サインインに失敗しました: $e', error: true);
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -73,9 +78,9 @@ class _SettingsPageState extends State<SettingsPage> {
     try {
       await _uploader.signOut();
       if (mounted) setState(() => _email = null);
-      _snack('Signed out');
+      _snack('サインアウトしました');
     } catch (e) {
-      _snack('Sign-out failed: $e', error: true);
+      _snack('サインアウトに失敗しました: $e', error: true);
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -93,13 +98,26 @@ class _SettingsPageState extends State<SettingsPage> {
     await prefs.setString(_kFolderIdKey, picked.id);
     await prefs.setString(_kFolderKey, picked.name);
     if (mounted) setState(() => _folderName = picked.name);
-    _snack('Upload folder set to "${picked.name}"');
+    _snack('アップロード先を「${picked.name}」に設定しました');
   }
 
   Future<void> _setAutoUpload(bool v) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_kAutoUpload, v);
     if (mounted) setState(() => _autoUpload = v);
+  }
+
+  Future<void> _saveSchedule(SyncSchedule s) async {
+    await s.save();
+    if (mounted) setState(() => _schedule = s);
+  }
+
+  Future<void> _pickTime(int currentMin, ValueChanged<int> onPicked) async {
+    final picked = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay(hour: currentMin ~/ 60, minute: currentMin % 60),
+    );
+    if (picked != null) onPicked(picked.hour * 60 + picked.minute);
   }
 
   void _snack(String msg, {bool error = false}) {
@@ -110,26 +128,56 @@ class _SettingsPageState extends State<SettingsPage> {
     ));
   }
 
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Settings')),
+      appBar: AppBar(title: const Text('設定')),
       body: AbsorbPointer(
         absorbing: _busy,
         child: ListView(
           children: [
+            // ---- 表示テーマ ----
             const Padding(
               padding: EdgeInsets.fromLTRB(16, 16, 16, 4),
-              child: Text('Google Drive',
+              child:
+                  Text('表示テーマ', style: TextStyle(fontWeight: FontWeight.bold)),
+            ),
+            ValueListenableBuilder<ThemeMode>(
+              valueListenable: themeModeNotifier,
+              builder: (context, mode, _) => Column(
+                children: [
+                  for (final m in const [
+                    ThemeMode.dark,
+                    ThemeMode.light,
+                    ThemeMode.system,
+                  ])
+                    RadioListTile<ThemeMode>(
+                      value: m,
+                      groupValue: mode,
+                      onChanged: (v) {
+                        if (v != null) setThemeMode(v);
+                      },
+                      secondary: Icon(switch (m) {
+                        ThemeMode.light => Icons.light_mode_outlined,
+                        ThemeMode.system => Icons.brightness_auto_outlined,
+                        _ => Icons.dark_mode_outlined,
+                      }),
+                      title: Text(themeModeLabelJa(m)),
+                    ),
+                ],
+              ),
+            ),
+            const Divider(),
+            // ---- 保存先（Google Drive） ----
+            const Padding(
+              padding: EdgeInsets.fromLTRB(16, 8, 16, 4),
+              child: Text('保存先（Google Drive）',
                   style: TextStyle(fontWeight: FontWeight.bold)),
             ),
             ListTile(
               leading: const Icon(Icons.account_circle),
-              title: Text(_loadingEmail
-                  ? 'Checking account…'
-                  : (_email ?? 'Not signed in')),
-              subtitle: const Text('Account recordings upload to'),
+              title: Text(_loadingEmail ? 'アカウント確認中…' : (_email ?? '未サインイン')),
+              subtitle: const Text('録音のアップロード先アカウント'),
               trailing: _busy
                   ? const SizedBox(
                       width: 20,
@@ -143,35 +191,111 @@ class _SettingsPageState extends State<SettingsPage> {
                 if (_email != null)
                   TextButton(
                     onPressed: _busy ? null : _signOut,
-                    child: const Text('Sign out'),
+                    child: const Text('サインアウト'),
                   ),
                 TextButton.icon(
                   onPressed: _busy ? null : _switchAccount,
                   icon: const Icon(Icons.swap_horiz),
-                  label: Text(_email == null ? 'Sign in' : 'Switch account'),
+                  label: Text(_email == null ? 'サインイン' : 'アカウント切替'),
                 ),
               ],
             ),
             const Divider(),
             ListTile(
               leading: const Icon(Icons.folder_outlined),
-              title: const Text('Upload folder'),
+              title: const Text('アップロード先フォルダ'),
               subtitle: Text(_folderName),
               trailing: TextButton.icon(
                 onPressed: _busy ? null : _pickFolder,
                 icon: const Icon(Icons.drive_folder_upload_outlined),
-                label: const Text('Change'),
+                label: const Text('変更'),
               ),
               onTap: _busy ? null : _pickFolder,
             ),
             const Divider(),
             SwitchListTile(
               secondary: const Icon(Icons.cloud_upload_outlined),
-              title: const Text('Auto-upload to Drive'),
-              subtitle: const Text(
-                  'Upload each recording automatically when it finishes'),
+              title: const Text('Driveへ自動アップロード'),
+              subtitle: const Text('録音が終わるたびに自動でアップロード'),
               value: _autoUpload,
               onChanged: _busy ? null : _setAutoUpload,
+            ),
+            const Divider(),
+            // ---- 自動吸出し（タイマー） ----
+            const Padding(
+              padding: EdgeInsets.fromLTRB(16, 8, 16, 4),
+              child: Text('自動吸出し（タイマー）',
+                  style: TextStyle(fontWeight: FontWeight.bold)),
+            ),
+            for (final m in SyncMode.values)
+              RadioListTile<SyncMode>(
+                value: m,
+                groupValue: _schedule.mode,
+                onChanged: (v) {
+                  if (v != null) _saveSchedule(_schedule.copyWith(mode: v));
+                },
+                secondary: Icon(switch (m) {
+                  SyncMode.scheduledTime => Icons.schedule,
+                  SyncMode.intervalWindow => Icons.timelapse,
+                  _ => Icons.sync,
+                }),
+                title: Text(syncModeLabelJa(m)),
+              ),
+            if (_schedule.mode == SyncMode.scheduledTime)
+              ListTile(
+                leading: const Icon(Icons.access_time),
+                title: const Text('時刻'),
+                trailing: Text(SyncSchedule.fmtHm(_schedule.timeMinutes),
+                    style: Theme.of(context).textTheme.titleMedium),
+                onTap: () => _pickTime(_schedule.timeMinutes,
+                    (m) => _saveSchedule(_schedule.copyWith(timeMinutes: m))),
+              ),
+            if (_schedule.mode == SyncMode.intervalWindow) ...[
+              ListTile(
+                leading: const Icon(Icons.timelapse),
+                title: const Text('間隔'),
+                trailing: DropdownButton<int>(
+                  value: _schedule.intervalMin,
+                  underline: const SizedBox.shrink(),
+                  items: const [5, 10, 15, 30, 60]
+                      .map((n) =>
+                          DropdownMenuItem(value: n, child: Text('$n分')))
+                      .toList(),
+                  onChanged: (v) {
+                    if (v != null) {
+                      _saveSchedule(_schedule.copyWith(intervalMin: v));
+                    }
+                  },
+                ),
+              ),
+              ListTile(
+                leading: const Icon(Icons.wb_sunny_outlined),
+                title: const Text('開始時刻'),
+                trailing: Text(SyncSchedule.fmtHm(_schedule.windowStartMin),
+                    style: Theme.of(context).textTheme.titleMedium),
+                onTap: () => _pickTime(_schedule.windowStartMin,
+                    (m) => _saveSchedule(_schedule.copyWith(windowStartMin: m))),
+              ),
+              ListTile(
+                leading: const Icon(Icons.nightlight_outlined),
+                title: const Text('終了時刻'),
+                trailing: Text(SyncSchedule.fmtHm(_schedule.windowEndMin),
+                    style: Theme.of(context).textTheme.titleMedium),
+                onTap: () => _pickTime(_schedule.windowEndMin,
+                    (m) => _saveSchedule(_schedule.copyWith(windowEndMin: m))),
+              ),
+            ],
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
+              child: Text(
+                _schedule.describeJa(),
+                style: TextStyle(
+                    fontSize: 12,
+                    color: Theme.of(context)
+                        .colorScheme
+                        .onSurface
+                        .withOpacity(0.6)),
+              ),
             ),
           ],
         ),
@@ -337,8 +461,7 @@ class _FolderPickerPageState extends State<_FolderPickerPage> {
               onPressed: () => Navigator.pop(context),
               child: const Text('Cancel')),
           TextButton(
-              onPressed: () =>
-                  Navigator.pop(context, controller.text.trim()),
+              onPressed: () => Navigator.pop(context, controller.text.trim()),
               child: const Text('Create')),
         ],
       ),
@@ -454,8 +577,7 @@ class _FolderPickerPageState extends State<_FolderPickerPage> {
           subtitle: Text(path == null ? 'resolving location…' : '📁 $path',
               maxLines: 2, overflow: TextOverflow.ellipsis),
           isThreeLine: false,
-          onTap: () =>
-              Navigator.pop(context, (id: f.id, name: f.name)),
+          onTap: () => Navigator.pop(context, (id: f.id, name: f.name)),
         );
       },
     );
@@ -478,8 +600,7 @@ class _FolderPickerPageState extends State<_FolderPickerPage> {
               onPressed: isLast
                   ? null
                   : () {
-                      setState(
-                          () => _stack.removeRange(i + 1, _stack.length));
+                      setState(() => _stack.removeRange(i + 1, _stack.length));
                       _load();
                     },
               child: Text(crumb.name),

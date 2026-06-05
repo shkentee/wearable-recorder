@@ -9,6 +9,7 @@ import '../services/wr_ble_device.dart';
 import '../services/wr_drive_uploader.dart';
 import '../services/wr_foreground_service.dart';
 import '../services/wr_sd_sync.dart';
+import '../widgets/brand.dart';
 import 'drive_files_page.dart';
 import 'recordings_page.dart';
 import 'settings_page.dart';
@@ -42,6 +43,7 @@ class _DevicePageState extends State<DevicePage> {
   int _lostPackets = 0;
   int? _batteryPct; // null until first Battery Service notify/read
   double _level = 0.0; // live mic level 0..1
+  final List<double> _levels = []; // rolling buffer for the live waveform
   bool _liveMonitor = false; // live audio subscription (off by default; power)
   bool? _recording; // device SD recording on/off; null = unsupported firmware
   int? _gainQ4; // mic capture gain, Q4 (16 = 1.0x); null = unsupported firmware
@@ -49,9 +51,9 @@ class _DevicePageState extends State<DevicePage> {
   bool _autoUpload = true; // auto-sync completed SD chunks to Drive
   WrSdSync? _sdSync;
   String? _syncStatus; // last SD-sync event, shown in the UI
+  WrSyncProgress? _syncProg; // live backlog / pull progress, shown in the UI
 
-  WrDriveUploader get _uploader =>
-      widget.uploaderOverride ?? WrDriveUploader();
+  WrDriveUploader get _uploader => widget.uploaderOverride ?? WrDriveUploader();
 
   @override
   void initState() {
@@ -87,7 +89,11 @@ class _DevicePageState extends State<DevicePage> {
     });
     widget.device.audioLevel.listen((lvl) {
       if (!mounted) return;
-      setState(() => _level = lvl);
+      setState(() {
+        _level = lvl;
+        _levels.add(lvl);
+        if (_levels.length > 96) _levels.removeAt(0);
+      });
     });
     _init();
   }
@@ -131,8 +137,121 @@ class _DevicePageState extends State<DevicePage> {
     sync.events.listen((msg) {
       if (mounted) setState(() => _syncStatus = msg);
     });
+    sync.progress.listen((p) {
+      if (mounted) setState(() => _syncProg = p);
+    });
     sync.start();
     _sdSync = sync;
+  }
+
+  String _fmtMB(int b) => '${(b / (1024 * 1024)).toStringAsFixed(1)}MB';
+
+  String _fmtDur(int secs) {
+    if (secs < 60) return '${secs}s';
+    final m = secs ~/ 60;
+    if (m < 60) return '${m}m';
+    return '${m ~/ 60}h${(m % 60).toString().padLeft(2, '0')}m';
+  }
+
+  /// Drive auto-sync read-out: backlog (un-fetched bytes still on the device),
+  /// current pull rate, and a progress bar. Falls back to a one-line status
+  /// before the first progress event arrives.
+  Widget _buildSyncStatus() {
+    final dim = Theme.of(context).colorScheme.onSurface.withOpacity(0.6);
+    if (!_autoUpload) {
+      return Row(
+        children: [
+          Icon(Icons.cloud_off_outlined, size: 18, color: dim),
+          const SizedBox(width: 8),
+          Text('Drive自動同期：オフ', style: TextStyle(fontSize: 13, color: dim)),
+        ],
+      );
+    }
+    final p = _syncProg;
+    if (p == null || p.committed == 0) {
+      return Row(
+        children: [
+          Icon(Icons.cloud_sync_outlined,
+              size: 18, color: Theme.of(context).colorScheme.secondary),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text('Drive自動同期：${_syncStatus ?? '待機中'}',
+                style: const TextStyle(fontSize: 13)),
+          ),
+        ],
+      );
+    }
+    final pct = (p.synced / p.committed).clamp(0.0, 1.0);
+    final backlogSecs = (p.backlogBytes / 4000).round(); // ~4000 B/s of audio
+    final rateKB = p.bytesPerSec / 1024;
+    final caught = p.caughtUp;
+    final cs = Theme.of(context).colorScheme;
+
+    // Header: a live spinner + bold「取得中」while pulling, a check when caught
+    // up, or「待機中」when the schedule has it paused — so the state is obvious.
+    Widget header;
+    if (caught) {
+      header = Row(children: [
+        Icon(Icons.cloud_done_outlined, size: 18, color: cs.secondary),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text('同期済み — 最新です（${p.uploadedChunks}件アップ済み）',
+              style:
+                  const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+        ),
+      ]);
+    } else if (p.fetching) {
+      header = Row(children: [
+        SizedBox(
+          width: 16,
+          height: 16,
+          child:
+              CircularProgressIndicator(strokeWidth: 2, color: cs.secondary),
+        ),
+        const SizedBox(width: 10),
+        Text('取得中',
+            style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w700,
+                color: cs.secondary)),
+        const Spacer(),
+        Text('${rateKB.toStringAsFixed(1)} KB/s',
+            style: TextStyle(fontSize: 12, color: dim)),
+      ]);
+    } else {
+      header = Row(children: [
+        Icon(Icons.pause_circle_outline, size: 18, color: dim),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text('待機中（スケジュール待ち）',
+              style: TextStyle(fontSize: 13, color: dim)),
+        ),
+      ]);
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        header,
+        const SizedBox(height: 8),
+        GradientProgressBar(value: pct, height: 8),
+        const SizedBox(height: 6),
+        Row(
+          children: [
+            Text('${_fmtMB(p.synced)} / ${_fmtMB(p.committed)}',
+                style:
+                    const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+            const SizedBox(width: 8),
+            Text('(${(pct * 100).toStringAsFixed(1)}%)',
+                style: TextStyle(fontSize: 12, color: dim)),
+            const Spacer(),
+            if (!caught)
+              Text('残り ${_fmtMB(p.backlogBytes)}（〜${_fmtDur(backlogSecs)}）',
+                  style: TextStyle(fontSize: 12, color: dim)),
+          ],
+        ),
+      ],
+    );
   }
 
   Future<void> _uploadToDriver() async {
@@ -196,9 +315,11 @@ class _DevicePageState extends State<DevicePage> {
     if (ok != true) return;
     try {
       final sent = await widget.device.sleepDevice();
-      _showSnackBar(sent
-          ? 'Sleep command sent — device powering down'
-          : 'Sleep not supported by this firmware', isError: !sent);
+      _showSnackBar(
+          sent
+              ? 'Sleep command sent — device powering down'
+              : 'Sleep not supported by this firmware',
+          isError: !sent);
     } catch (_) {
       // The link drops as the device powers off — expected.
       _showSnackBar('Sleep command sent — device powering down');
@@ -223,11 +344,23 @@ class _DevicePageState extends State<DevicePage> {
     super.dispose();
   }
 
+  Widget _card(Widget child) => Card(
+        child: Padding(padding: const EdgeInsets.all(16), child: child),
+      );
+
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final dim = cs.onSurface.withOpacity(0.6);
+    final connected = _status == 'connected';
+    final statusJa = _status == 'connected'
+        ? '接続中'
+        : _status == 'disconnected'
+            ? '未接続'
+            : '接続中…';
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.device.name),
+        title: const MojioWordmark(fontSize: 24),
         actions: [
           if (_batteryPct != null)
             Padding(
@@ -245,8 +378,7 @@ class _DevicePageState extends State<DevicePage> {
                     size: 20,
                   ),
                   const SizedBox(width: 2),
-                  Text('$_batteryPct%',
-                      style: const TextStyle(fontSize: 13)),
+                  Text('$_batteryPct%', style: const TextStyle(fontSize: 13)),
                 ],
               ),
             ),
@@ -311,168 +443,200 @@ class _DevicePageState extends State<DevicePage> {
           ),
         ],
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('id: ${widget.device.id}'),
-            const SizedBox(height: 8),
-            Text('status: $_status'),
-            const SizedBox(height: 8),
-            Text('audioCodec packets: $_packets',
-                style: Theme.of(context).textTheme.headlineSmall),
-            const SizedBox(height: 8),
-            Text('Saved bytes: $_savedBytes',
-                style: Theme.of(context).textTheme.titleMedium),
-            const SizedBox(height: 8),
-            Text('Lost: $_lostPackets',
-                style: Theme.of(context).textTheme.titleMedium),
-            const SizedBox(height: 24),
-            Row(
-              children: [
-                const Icon(Icons.mic, size: 20),
-                const SizedBox(width: 8),
-                const Text('Mic level'),
-                const Spacer(),
-                const Text('Live monitor',
-                    style: TextStyle(fontSize: 12, color: Colors.grey)),
-                Switch(
-                  value: _liveMonitor,
-                  onChanged: (v) async {
-                    setState(() {
-                      _liveMonitor = v;
-                      if (!v) _level = 0.0;
-                    });
-                    try {
-                      await widget.device.setLiveMonitor(v);
-                    } catch (_) {}
-                  },
-                ),
-              ],
-            ),
-            const SizedBox(height: 6),
-            ClipRRect(
-              borderRadius: BorderRadius.circular(6),
-              child: LinearProgressIndicator(
-                value: _liveMonitor ? _level : 0.0,
-                minHeight: 16,
-                backgroundColor: Colors.grey.shade300,
-                valueColor: AlwaysStoppedAnimation<Color>(
-                  _level > 0.85
-                      ? Colors.red
-                      : _level > 0.5
-                          ? Colors.orange
-                          : Colors.green,
-                ),
-              ),
-            ),
-            if (!_liveMonitor)
-              const Padding(
-                padding: EdgeInsets.only(top: 4),
-                child: Text(
-                  'Off — enable briefly to check the mic (saves battery)',
-                  style: TextStyle(fontSize: 11, color: Colors.grey),
-                ),
-              ),
-            if (_gainQ4 != null) ...[
-              const SizedBox(height: 16),
-              Row(
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+        children: [
+          // ---- デバイスカード（製品写真） ----
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Row(
                 children: [
-                  const Icon(Icons.tune, size: 20),
-                  const SizedBox(width: 8),
-                  const Text('Mic gain'),
-                  const Spacer(),
-                  Text('${(_gainQ4! / 16).toStringAsFixed(2)}x',
-                      style: Theme.of(context).textTheme.titleMedium),
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(14),
+                    child: Container(
+                      width: 72,
+                      height: 72,
+                      color: Colors.white,
+                      child: Image.asset('assets/mojio_device.png',
+                          fit: BoxFit.cover),
+                    ),
+                  ),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text('Mojio Device',
+                            style: TextStyle(
+                                fontWeight: FontWeight.w700, fontSize: 16)),
+                        const SizedBox(height: 6),
+                        Row(
+                          children: [
+                            Container(
+                              width: 8,
+                              height: 8,
+                              decoration: BoxDecoration(
+                                color: connected ? cs.secondary : Colors.grey,
+                                shape: BoxShape.circle,
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            Text(statusJa,
+                                style: TextStyle(color: dim, fontSize: 13)),
+                            const Spacer(),
+                            if (_batteryPct != null) ...[
+                              Icon(
+                                _batteryPct! >= 80
+                                    ? Icons.battery_full
+                                    : _batteryPct! >= 40
+                                        ? Icons.battery_4_bar
+                                        : Icons.battery_alert,
+                                size: 16,
+                                color: _batteryPct! < 20 ? cs.error : dim,
+                              ),
+                              const SizedBox(width: 2),
+                              Text('$_batteryPct%',
+                                  style: TextStyle(color: dim, fontSize: 13)),
+                            ],
+                          ],
+                        ),
+                        const SizedBox(height: 10),
+                        Text(
+                          '受信 $_packets ・ 保存 ${_fmtMB(_savedBytes)} ・ ロスト $_lostPackets',
+                          style: TextStyle(fontSize: 11, color: dim),
+                        ),
+                      ],
+                    ),
+                  ),
                 ],
               ),
-              Slider(
-                min: 4, // 0.25x
-                max: 128, // 8.0x
-                divisions: 31, // steps of 4 (0.25x)
-                value: _gainQ4!.clamp(4, 128).toDouble(),
-                label: '${(_gainQ4! / 16).toStringAsFixed(2)}x',
-                onChanged: (v) => setState(() => _gainQ4 = v.round()),
-                onChangeEnd: (v) async {
-                  final g = v.round();
+            ),
+          ),
+          const SizedBox(height: 14),
+          _card(
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(Icons.mic, size: 20, color: cs.secondary),
+                    const SizedBox(width: 8),
+                    const Text('マイク入力',
+                        style: TextStyle(fontWeight: FontWeight.w600)),
+                    const Spacer(),
+                    Text('ライブモニター', style: TextStyle(fontSize: 12, color: dim)),
+                    Switch(
+                      value: _liveMonitor,
+                      onChanged: (v) async {
+                        setState(() {
+                          _liveMonitor = v;
+                          if (!v) {
+                            _level = 0.0;
+                            _levels.clear();
+                          }
+                        });
+                        try {
+                          await widget.device.setLiveMonitor(v);
+                        } catch (_) {}
+                      },
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                WaveformBars(
+                    levels: _liveMonitor ? _levels : const [], height: 56),
+                if (!_liveMonitor)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: Text('オフ — マイク確認時だけオンに（省電力）',
+                        style: TextStyle(fontSize: 11, color: dim)),
+                  ),
+              ],
+            ),
+          ),
+          if (_gainQ4 != null) ...[
+            const SizedBox(height: 14),
+            _card(
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.tune, size: 20, color: cs.secondary),
+                      const SizedBox(width: 8),
+                      const Text('マイクゲイン',
+                          style: TextStyle(fontWeight: FontWeight.w600)),
+                      const Spacer(),
+                      Text('${(_gainQ4! / 16).toStringAsFixed(2)}x',
+                          style: Theme.of(context).textTheme.titleMedium),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  LevelMeter(level: _liveMonitor ? _level : 0.0, height: 12),
+                  if (!_liveMonitor)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 6),
+                      child: Text('ライブモニターをオンにすると入力レベルを見ながら調整できます',
+                          style: TextStyle(fontSize: 11, color: dim)),
+                    ),
+                  Slider(
+                    min: 4,
+                    max: 128,
+                    divisions: 31,
+                    value: _gainQ4!.clamp(4, 128).toDouble(),
+                    label: '${(_gainQ4! / 16).toStringAsFixed(2)}x',
+                    onChanged: (v) => setState(() => _gainQ4 = v.round()),
+                    onChangeEnd: (v) async {
+                      final g = v.round();
+                      try {
+                        await widget.device.setGainQ4(g);
+                      } catch (e) {
+                        _showSnackBar('ゲイン設定に失敗しました: $e', isError: true);
+                      }
+                    },
+                  ),
+                ],
+              ),
+            ),
+          ],
+          if (_recording != null) ...[
+            const SizedBox(height: 14),
+            Card(
+              child: SwitchListTile(
+                contentPadding: const EdgeInsets.symmetric(horizontal: 16),
+                secondary: Icon(
+                  _recording!
+                      ? Icons.fiber_manual_record
+                      : Icons.stop_circle_outlined,
+                  color: _recording! ? cs.error : null,
+                ),
+                title: const Text('SDに録音'),
+                subtitle: Text(_recording! ? 'オン — 本体に保存中' : 'オフ — 一時停止'),
+                value: _recording!,
+                onChanged: (v) async {
+                  setState(() => _recording = v);
                   try {
-                    await widget.device.setGainQ4(g);
+                    await widget.device.setRecording(v);
                   } catch (e) {
-                    _showSnackBar('Failed to set gain: $e', isError: true);
+                    if (mounted) {
+                      setState(() => _recording = !v);
+                      _showSnackBar('録音の${v ? '開始' : '停止'}に失敗しました: $e',
+                          isError: true);
+                    }
                   }
                 },
               ),
-            ],
-            if (_recording != null) ...[
-              const SizedBox(height: 20),
-              Card(
-                margin: EdgeInsets.zero,
-                child: SwitchListTile(
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 12),
-                  secondary: Icon(
-                    _recording! ? Icons.fiber_manual_record : Icons.stop_circle_outlined,
-                    color: _recording! ? Colors.red : null,
-                  ),
-                  title: const Text('Recording to SD'),
-                  subtitle: Text(
-                      _recording! ? 'On — saving on device' : 'Off — paused'),
-                  value: _recording!,
-                  onChanged: (v) async {
-                    setState(() => _recording = v); // optimistic
-                    try {
-                      await widget.device.setRecording(v);
-                    } catch (e) {
-                      if (mounted) {
-                        setState(() => _recording = !v); // revert on failure
-                        _showSnackBar('Failed to ${v ? 'start' : 'stop'} recording: $e',
-                            isError: true);
-                      }
-                    }
-                  },
-                ),
-              ),
-            ],
-            const Spacer(),
-            Row(
-              children: [
-                Icon(
-                  _autoUpload
-                      ? Icons.cloud_sync_outlined
-                      : Icons.cloud_off_outlined,
-                  size: 18,
-                  color: _autoUpload
-                      ? Theme.of(context).colorScheme.primary
-                      : Colors.grey,
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    _autoUpload
-                        ? 'Drive auto-sync: ${_syncStatus ?? 'on'}'
-                        : 'Drive auto-sync: off',
-                    style: const TextStyle(fontSize: 13),
-                  ),
-                ),
-              ],
             ),
           ],
-        ),
+          const SizedBox(height: 14),
+          _card(_buildSyncStatus()),
+        ],
       ),
-      floatingActionButton: FloatingActionButton.extended(
+      floatingActionButton: GradientButton(
         onPressed: _uploading ? null : _uploadToDriver,
-        icon: _uploading
-            ? const SizedBox(
-                width: 20,
-                height: 20,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  color: Colors.white,
-                ),
-              )
-            : const Icon(Icons.cloud_upload),
-        label: Text(_uploading ? 'Uploading…' : 'Upload to Drive'),
-        tooltip: 'Upload latest dump file to Google Drive',
+        icon: _uploading ? null : Icons.cloud_upload,
+        label: _uploading ? 'アップロード中…' : 'Driveにアップロード',
       ),
     );
   }

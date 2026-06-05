@@ -108,6 +108,26 @@ class WrBleDevice {
       } catch (_) {
         // Non-fatal: fall back to the default 23-byte MTU.
       }
+      // High connection priority shortens the connection interval (~15 ms vs
+      // ~50 ms balanced), multiplying storage-fetch throughput so the SD
+      // backlog drains several times faster.
+      try {
+        await _device.requestConnectionPriority(
+            connectionPriorityRequest: ConnectionPriority.high);
+      } catch (_) {
+        // Non-fatal: stay at the default balanced interval.
+      }
+      // Prefer the 2M PHY: doubles the radio bitrate (1→2 Mbps) when both ends
+      // support it, ~doubling storage-fetch throughput. No-op if unsupported.
+      try {
+        await _device.setPreferredPhy(
+          txPhy: Phy.le2m.mask,
+          rxPhy: Phy.le2m.mask,
+          option: PhyCoding.noPreferred,
+        );
+      } catch (_) {
+        // Non-fatal: stay on the 1M PHY.
+      }
     }
     final services = await _device.discoverServices();
     _discoveredServices = services;

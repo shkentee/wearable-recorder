@@ -44,6 +44,7 @@ dependencies:
   opus_dart: ^3.0.1
   opus_flutter: ^3.0.3
   just_audio: ^0.9.42
+  google_fonts: ^6.3.0
 
 dev_dependencies:
   flutter_test:
@@ -54,6 +55,18 @@ dev_dependencies:
   # is null-safety native (no codegen / build_runner step needed) and
   # plays nicely with abstract Stream getters on our Wr* wrappers.
   mocktail: ^1.0.4
+  flutter_launcher_icons: ^0.14.4
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/mojio_logo.png
+    - assets/mojio_device.png
+
+flutter_launcher_icons:
+  android: true
+  ios: false
+  image_path: "assets/mojio_logo.png"
+  adaptive_icon_background: "#FFFFFF"
+  adaptive_icon_foreground: "assets/mojio_logo.png"
+  min_sdk_android: 21
