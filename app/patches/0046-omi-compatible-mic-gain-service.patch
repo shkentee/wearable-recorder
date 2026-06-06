@@ -1,0 +1,204 @@
+diff --git a/omi/firmware/devkit/src/mic.c b/omi/firmware/devkit/src/mic.c
+index 4dd0720..e665dfd 100644
+--- a/omi/firmware/devkit/src/mic.c
++++ b/omi/firmware/devkit/src/mic.c
+@@ -22,6 +22,29 @@ static int16_t _buffer_0[MIC_BUFFER_SAMPLES];
+ static int16_t _buffer_1[MIC_BUFFER_SAMPLES];
+ static volatile uint8_t _next_buffer_index = 0;
+ static volatile mix_handler _callback = NULL;
++static uint8_t _mic_gain_level = 6;
++static bool _pdm_started = false;
++
++static uint8_t mic_gain_hw_value(uint8_t gain_level)
++{
++    static const uint8_t gain_map[9] = {
++        0x00, // Level 0: mute
++        0x14, // Level 1: -20dB
++        0x1E, // Level 2: -10dB
++        0x28, // Level 3: +0dB
++        0x2E, // Level 4: +6dB
++        0x32, // Level 5: +10dB
++        0x3C, // Level 6: +20dB (Omi default)
++        0x46, // Level 7: +30dB
++        0x50, // Level 8: +40dB
++    };
++
++    if (gain_level > 8) {
++        gain_level = 8;
++    }
++
++    return gain_map[gain_level];
++}
+ 
+ static void pdm_irq_handler(nrfx_pdm_evt_t const *event)
+ {
+@@ -62,8 +85,9 @@ int mic_start()
+ 
+     // Configure PDM
+     nrfx_pdm_config_t pdm_config = NRFX_PDM_DEFAULT_CONFIG(PDM_CLK_PIN, PDM_DIN_PIN);
+-    pdm_config.gain_l = MIC_GAIN;
+-    pdm_config.gain_r = MIC_GAIN;
++    uint8_t mic_gain = mic_gain_hw_value(_mic_gain_level);
++    pdm_config.gain_l = mic_gain;
++    pdm_config.gain_r = mic_gain;
+     pdm_config.interrupt_priority = MIC_IRC_PRIORITY;
+     pdm_config.clock_freq = NRF_PDM_FREQ_1280K;
+     pdm_config.mode = NRF_PDM_MODE_MONO;
+@@ -85,6 +109,7 @@ int mic_start()
+         return -1;
+     }
+ 
++    _pdm_started = true;
+     LOG_INF("Audio microphone started");
+     return 0;
+ }
+@@ -94,6 +119,25 @@ void set_mic_callback(mix_handler callback)
+     _callback = callback;
+ }
+ 
++uint8_t mic_get_gain_level()
++{
++    return _mic_gain_level;
++}
++
++void mic_set_gain(uint8_t gain_level)
++{
++    if (gain_level > 8) {
++        gain_level = 8;
++    }
++
++    _mic_gain_level = gain_level;
++    uint8_t hw_gain = mic_gain_hw_value(gain_level);
++    if (_pdm_started) {
++        nrfx_pdm_gain_set(hw_gain, hw_gain);
++    }
++    LOG_INF("Audio mic gain set to level %u (0x%02x)", gain_level, hw_gain);
++}
++
+ void mic_off()
+ {
+     nrfy_gpio_pin_clear(PDM_PWR_PIN);
+diff --git a/omi/firmware/devkit/src/mic.h b/omi/firmware/devkit/src/mic.h
+index 0cd5162..fcd911d 100644
+--- a/omi/firmware/devkit/src/mic.h
++++ b/omi/firmware/devkit/src/mic.h
+@@ -16,6 +16,9 @@ typedef void (*mix_handler)(int16_t *);
+ int mic_start();
+ void set_mic_callback(mix_handler _callback);
+ 
++uint8_t mic_get_gain_level();
++void mic_set_gain(uint8_t gain_level);
++
+ void mic_off();
+ void mic_on();
+ #endif
+diff --git a/omi/firmware/devkit/src/transport.c b/omi/firmware/devkit/src/transport.c
+index 2b63517..0daca1b 100644
+--- a/omi/firmware/devkit/src/transport.c
++++ b/omi/firmware/devkit/src/transport.c
+@@ -1,5 +1,6 @@
+ #include "transport.h"
+ 
++#include <errno.h>
+ #include <zephyr/bluetooth/bluetooth.h>
+ #include <zephyr/bluetooth/gatt.h>
+ #include <zephyr/bluetooth/hci.h>
+@@ -59,6 +60,17 @@ static ssize_t audio_codec_read_characteristic(struct bt_conn *conn,
+                                                void *buf,
+                                                uint16_t len,
+                                                uint16_t offset);
++static ssize_t settings_mic_gain_write_handler(struct bt_conn *conn,
++                                               const struct bt_gatt_attr *attr,
++                                               const void *buf,
++                                               uint16_t len,
++                                               uint16_t offset,
++                                               uint8_t flags);
++static ssize_t settings_mic_gain_read_handler(struct bt_conn *conn,
++                                              const struct bt_gatt_attr *attr,
++                                              void *buf,
++                                              uint16_t len,
++                                              uint16_t offset);
+ 
+ static void dfu_ccc_config_changed_handler(const struct bt_gatt_attr *attr, uint16_t value);
+ static ssize_t dfu_control_point_write_handler(struct bt_conn *conn,
+@@ -115,6 +127,23 @@ static struct bt_gatt_attr audio_service_attr[] = {
+ 
+ static struct bt_gatt_service audio_service = BT_GATT_SERVICE(audio_service_attr);
+ 
++static struct bt_uuid_128 settings_service_uuid =
++    BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10010, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
++static struct bt_uuid_128 settings_mic_gain_characteristic_uuid =
++    BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10012, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
++
++static struct bt_gatt_attr settings_service_attr[] = {
++    BT_GATT_PRIMARY_SERVICE(&settings_service_uuid),
++    BT_GATT_CHARACTERISTIC(&settings_mic_gain_characteristic_uuid.uuid,
++                           BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE,
++                           BT_GATT_PERM_READ | BT_GATT_PERM_WRITE,
++                           settings_mic_gain_read_handler,
++                           settings_mic_gain_write_handler,
++                           NULL),
++};
++
++static struct bt_gatt_service settings_service = BT_GATT_SERVICE(settings_service_attr);
++
+ // Nordic Legacy DFU service with UUID 00001530-1212-EFDE-1523-785FEABCD123
+ // exposes following characteristics:
+ // - Control point (UUID 00001531-1212-EFDE-1523-785FEABCD123) to start the OTA update process (write/notify)
+@@ -326,6 +355,40 @@ static ssize_t audio_data_write_handler(struct bt_conn *conn,
+     return len;
+ }
+ 
++static ssize_t settings_mic_gain_write_handler(struct bt_conn *conn,
++                                               const struct bt_gatt_attr *attr,
++                                               const void *buf,
++                                               uint16_t len,
++                                               uint16_t offset,
++                                               uint8_t flags)
++{
++    if (offset != 0) {
++        return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
++    }
++
++    if (len != 1) {
++        return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
++    }
++
++    uint8_t gain_level = ((uint8_t *) buf)[0];
++    if (gain_level > 8) {
++        gain_level = 8;
++    }
++
++    mic_set_gain(gain_level);
++    return len;
++}
++
++static ssize_t settings_mic_gain_read_handler(struct bt_conn *conn,
++                                              const struct bt_gatt_attr *attr,
++                                              void *buf,
++                                              uint16_t len,
++                                              uint16_t offset)
++{
++    uint8_t gain_level = mic_get_gain_level();
++    return bt_gatt_attr_read(conn, attr, buf, len, offset, &gain_level, sizeof(gain_level));
++}
++
+ //
+ // DFU Service Handlers
+ //
+@@ -801,6 +864,7 @@ int bt_on()
+     int err = bt_enable(NULL);
+     bt_le_adv_start(BT_LE_ADV_CONN, bt_ad, ARRAY_SIZE(bt_ad), bt_sd, ARRAY_SIZE(bt_sd));
+     bt_gatt_service_register(&storage_service);
++    bt_gatt_service_register(&settings_service);
+     sd_on();
+     mic_on();
+ 
+@@ -835,6 +899,7 @@ int transport_start()
+     // Start advertising
+     memset(storage_temp_data, 0, OPUS_PADDED_LENGTH * 4);
+     bt_gatt_service_register(&storage_service);
++    bt_gatt_service_register(&settings_service);
+     bt_gatt_service_register(&audio_service);
+     bt_gatt_service_register(&dfu_service);
+     err = bt_le_adv_start(BT_LE_ADV_CONN, bt_ad, ARRAY_SIZE(bt_ad), bt_sd, ARRAY_SIZE(bt_sd));
