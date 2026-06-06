@@ -100,12 +100,11 @@ static void batt_adc_worker(struct k_work *work)
 		return;
 	}
 	uint16_t mv = wr_battery_raw_to_mv(batt_raw);
-	/* If the divider isn't populated (USB-only board), AIN7 floats and
-	 * reads near 0 mV. Treat that as "no battery monitor" and keep
-	 * wr_led_batt_pct at its default 100, instead of falsely flashing
-	 * the low-batt warning. Real battery readings are always above
-	 * ~2500 mV (the cutoff voltage of a Li-Po). */
-	if (mv < 1000) {
+	/* If the divider isn't populated (USB-only board), AIN7 can float
+	 * below the Li-Po cutoff. Treat that as "no battery monitor" and
+	 * keep wr_led_batt_pct at its default 100 instead of falsely
+	 * flashing the low-batt warning. */
+	if (mv <= 3000U) {
 		return;
 	}
 	wr_led_batt_pct = wr_battery_mv_to_pct(mv);

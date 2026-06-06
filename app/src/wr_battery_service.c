@@ -1,9 +1,9 @@
 /*
- * Battery GATT Service (Bluetooth SIG UUID 0x180F).
+ * Battery Service updater (Bluetooth SIG UUID 0x180F).
  *
- * Exposes a Battery Level characteristic (UUID 0x2A19):
- *   - READ:   returns current battery-level percentage [0–100]
- *   - NOTIFY: sends a notification whenever the level changes
+ * Zephyr already exposes the standard Battery Service when CONFIG_BT_BAS=y.
+ * This file only feeds the latest battery-level percentage into that one
+ * service so clients do not see duplicate 0x180F services.
  *
  * Battery percentage is derived from the last ADC reading already
  * maintained by wr_led_status.c (shared via wr_led_status_get_batt_pct).
@@ -11,13 +11,10 @@
  * (60 s) and triggers a BLE notification when the value differs from
  * the last notified value.
  *
- * The GATT table is registered at link time via BT_GATT_SERVICE_DEFINE;
- * call wr_battery_service_init() once during boot to arm the timer.
+ * Call wr_battery_service_init() once during boot to arm the timer.
  */
 
-#include <zephyr/bluetooth/bluetooth.h>
-#include <zephyr/bluetooth/gatt.h>
-#include <zephyr/bluetooth/uuid.h>
+#include <zephyr/bluetooth/services/bas.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <stdint.h>
@@ -49,46 +46,7 @@ uint8_t wr_led_status_get_batt_pct(void);
 /* Notification state                                                  */
 /* ------------------------------------------------------------------ */
 
-static uint8_t wr_batt_last_pct = 0xFF; /* sentinel — force first notify */
-static bool    wr_batt_notify_enabled;
-
-/* ------------------------------------------------------------------ */
-/* GATT service definition                                             */
-/*                                                                     */
-/* attrs layout:                                                       */
-/*   [0] Primary Service  (0x180F)                                     */
-/*   [1] Battery Level declaration                                     */
-/*   [2] Battery Level value  (0x2A19)  ← used with bt_gatt_notify()  */
-/*   [3] CCC descriptor                                                */
-/* ------------------------------------------------------------------ */
-
-static ssize_t wr_batt_read(struct bt_conn *conn,
-			    const struct bt_gatt_attr *attr,
-			    void *buf, uint16_t len, uint16_t offset)
-{
-	uint8_t pct = wr_led_status_get_batt_pct();
-
-	return bt_gatt_attr_read(conn, attr, buf, len, offset,
-				 &pct, sizeof(pct));
-}
-
-static void wr_batt_ccc_changed(const struct bt_gatt_attr *attr,
-				uint16_t value)
-{
-	wr_batt_notify_enabled = (value & BT_GATT_CCC_NOTIFY) != 0;
-	LOG_INF("wr_battery_svc: notifications %s",
-		wr_batt_notify_enabled ? "enabled" : "disabled");
-}
-
-BT_GATT_SERVICE_DEFINE(wr_battery_svc,
-	BT_GATT_PRIMARY_SERVICE(BT_UUID_BAS),
-	BT_GATT_CHARACTERISTIC(BT_UUID_BAS_BATTERY_LEVEL,
-			       BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
-			       BT_GATT_PERM_READ,
-			       wr_batt_read, NULL, NULL),
-	BT_GATT_CCC(wr_batt_ccc_changed,
-		    BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
-);
+static uint8_t wr_batt_last_pct = 0xFF; /* sentinel - force first update */
 
 /* ------------------------------------------------------------------ */
 /* Periodic update work                                                */
@@ -103,14 +61,12 @@ static void wr_batt_update_fn(struct k_work *work)
 
 	uint8_t pct = wr_led_status_get_batt_pct();
 
-	if (wr_batt_notify_enabled && pct != wr_batt_last_pct) {
-		/* attrs[2] is the Battery Level value attribute. */
-		int err = bt_gatt_notify(NULL, &wr_battery_svc.attrs[2],
-					 &pct, sizeof(pct));
-		if (err && err != -ENOTCONN) {
-			LOG_WRN("wr_battery_svc: notify failed (%d)", err);
+	if (pct != wr_batt_last_pct) {
+		int err = bt_bas_set_battery_level(pct);
+		if (err) {
+			LOG_WRN("wr_battery_svc: BAS update failed (%d)", err);
 		} else {
-			LOG_DBG("wr_battery_svc: notified %u%%", pct);
+			LOG_DBG("wr_battery_svc: updated %u%%", pct);
 		}
 	}
 
@@ -127,9 +83,7 @@ static void wr_batt_update_fn(struct k_work *work)
 
 void wr_battery_service_init(void)
 {
-	/* Kick off the first update after one full interval so the BLE
-	 * stack has time to come up and a connection can form. */
-	k_work_reschedule(&wr_batt_work, K_MSEC(WR_BATT_SVC_INTERVAL_MS));
+	k_work_reschedule(&wr_batt_work, K_MSEC(1000));
 	LOG_INF("wr_battery_svc: armed (interval %d s)",
 		WR_BATT_SVC_INTERVAL_MS / 1000);
 }

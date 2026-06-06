@@ -1,0 +1,36 @@
+diff --git a/omi/firmware/devkit/src/transport.c b/omi/firmware/devkit/src/transport.c
+index 130c108..de20112 100644
+--- a/omi/firmware/devkit/src/transport.c
++++ b/omi/firmware/devkit/src/transport.c
+@@ -432,25 +432,18 @@ static ssize_t dfu_control_point_write_handler(struct bt_conn *conn,
+ #define BATTERY_REFRESH_INTERVAL 15000 // 15 seconds
+ 
+ void broadcast_battery_level(struct k_work *work_item);
++extern uint8_t wr_led_status_get_batt_pct(void);
+ 
+ K_WORK_DELAYABLE_DEFINE(battery_work, broadcast_battery_level);
+ 
+ void broadcast_battery_level(struct k_work *work_item)
+ {
+-    uint16_t battery_millivolt;
+-    uint8_t battery_percentage;
+-    if (battery_get_millivolt(&battery_millivolt) == 0 &&
+-        battery_get_percentage(&battery_percentage, battery_millivolt) == 0) {
++    uint8_t battery_percentage = wr_led_status_get_batt_pct();
+ 
+-        LOG_PRINTK("Battery at %d mV (capacity %d%%)\n", battery_millivolt, battery_percentage);
+-
+-        // Use the Zephyr BAS function to set (and notify) the battery level
+-        int err = bt_bas_set_battery_level(battery_percentage);
+-        if (err) {
+-            LOG_ERR("Error updating battery level: %d", err);
+-        }
+-    } else {
+-        LOG_ERR("Failed to read battery level");
++    // Use the Zephyr BAS function to set (and notify) the battery level.
++    int err = bt_bas_set_battery_level(battery_percentage);
++    if (err) {
++        LOG_ERR("Error updating battery level: %d", err);
+     }
+ 
+     k_work_reschedule(&battery_work, K_MSEC(BATTERY_REFRESH_INTERVAL));
