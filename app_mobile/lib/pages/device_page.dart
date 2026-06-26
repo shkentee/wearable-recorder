@@ -1,25 +1,32 @@
-import 'dart:io';
-
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../services/wr_ble_device.dart';
 import '../services/wr_drive_uploader.dart';
 import '../services/wr_foreground_service.dart';
 import '../services/wr_sd_sync.dart';
+import '../services/wr_sync_schedule.dart';
 import '../widgets/brand.dart';
 import 'drive_files_page.dart';
 import 'recordings_page.dart';
 import 'settings_page.dart';
 import 'storage_page.dart';
+import 'transcripts_page.dart';
 
 /// SharedPreferences key used to persist the last-connected device address.
 const _kLastDeviceId = 'wr_last_device_id';
-
-/// SharedPreferences key for the auto-upload-on-disconnect toggle.
-const _kAutoUpload = 'wr_auto_upload';
+const _micGainLabels = [
+  'Mute',
+  '-20dB',
+  '-10dB',
+  '0dB',
+  '+6dB',
+  '+10dB',
+  '+20dB',
+  '+30dB',
+  '+40dB',
+];
 
 class DevicePage extends StatefulWidget {
   const DevicePage({
@@ -46,12 +53,13 @@ class _DevicePageState extends State<DevicePage> {
   final List<double> _levels = []; // rolling buffer for the live waveform
   bool _liveMonitor = false; // live audio subscription (off by default; power)
   bool? _recording; // device SD recording on/off; null = unsupported firmware
-  int? _gainQ4; // mic capture gain, Q4 (16 = 1.0x); null = unsupported firmware
-  bool _uploading = false;
-  bool _autoUpload = true; // auto-sync completed SD chunks to Drive
+  int? _micGainLevel; // Omi mic gain level 0..8; null = unsupported firmware
+  bool _driveUploadAuto = true;
+  SyncSchedule _schedule = const SyncSchedule();
   WrSdSync? _sdSync;
   String? _syncStatus; // last SD-sync event, shown in the UI
   WrSyncProgress? _syncProg; // live backlog / pull progress, shown in the UI
+  WrUploadStatus? _driveStatus; // Drive upload queue state
 
   WrDriveUploader get _uploader => widget.uploaderOverride ?? WrDriveUploader();
 
@@ -99,11 +107,18 @@ class _DevicePageState extends State<DevicePage> {
   }
 
   Future<void> _init() async {
-    final prefs = await SharedPreferences.getInstance();
-    if (mounted) {
-      setState(() => _autoUpload = prefs.getBool(_kAutoUpload) ?? true);
-    }
+    await _loadSyncSettings();
     await _connect();
+  }
+
+  Future<void> _loadSyncSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    final schedule = await SyncSchedule.load();
+    if (!mounted) return;
+    setState(() {
+      _driveUploadAuto = prefs.getBool(kDriveUploadAutoKey) ?? true;
+      _schedule = schedule;
+    });
   }
 
   Future<void> _connect() async {
@@ -117,22 +132,21 @@ class _DevicePageState extends State<DevicePage> {
       final rec = await widget.device.readRecordingState();
       if (mounted) setState(() => _recording = rec);
       // Reflect the device's current mic gain (if supported).
-      final gain = await widget.device.readGainQ4();
-      if (mounted) setState(() => _gainQ4 = gain);
-      // Start pulling completed SD chunks -> Drive for transcription.
-      _startSdSyncIfEnabled();
+      final gain = await widget.device.readMicGainLevel();
+      if (mounted) setState(() => _micGainLevel = gain);
+      // Start SD pull + Drive upload service. Modes decide whether each side
+      // runs automatically or waits for a card button.
+      _startSdSync();
     } catch (e) {
       if (!mounted) return;
       setState(() => _status = 'error: $e');
     }
   }
 
-  /// Starts the background SD-chunk -> Drive sync (if auto-upload is enabled).
-  /// The device records ~10-min chunks to SD; this fetches completed ones and
-  /// uploads them, so transcription gets near-real-time, loss-tolerant audio.
-  void _startSdSyncIfEnabled() {
+  /// Starts the background SD-pull + Drive-upload coordinator.
+  void _startSdSync() {
     _sdSync?.stop();
-    if (!_autoUpload) return;
+    _sdSync = null;
     final sync = WrSdSync(device: widget.device, uploader: _uploader);
     sync.events.listen((msg) {
       if (mounted) setState(() => _syncStatus = msg);
@@ -140,158 +154,165 @@ class _DevicePageState extends State<DevicePage> {
     sync.progress.listen((p) {
       if (mounted) setState(() => _syncProg = p);
     });
+    sync.uploadStatus.listen((s) {
+      if (mounted) setState(() => _driveStatus = s);
+    });
     sync.start();
     _sdSync = sync;
+    if (mounted) setState(() {});
   }
 
   String _fmtMB(int b) => '${(b / (1024 * 1024)).toStringAsFixed(1)}MB';
 
-  String _fmtDur(int secs) {
-    if (secs < 60) return '${secs}s';
-    final m = secs ~/ 60;
-    if (m < 60) return '${m}m';
-    return '${m ~/ 60}h${(m % 60).toString().padLeft(2, '0')}m';
+  double _progressValue(int done, int total) {
+    if (total <= 0) return 0;
+    return (done / total).clamp(0.0, 1.0);
   }
 
-  /// Drive auto-sync read-out: backlog (un-fetched bytes still on the device),
-  /// current pull rate, and a progress bar. Falls back to a one-line status
-  /// before the first progress event arrives.
-  Widget _buildSyncStatus() {
-    final dim = Theme.of(context).colorScheme.onSurface.withOpacity(0.6);
-    if (!_autoUpload) {
-      return Row(
-        children: [
-          Icon(Icons.cloud_off_outlined, size: 18, color: dim),
-          const SizedBox(width: 8),
-          Text('Drive自動同期：オフ', style: TextStyle(fontSize: 13, color: dim)),
-        ],
-      );
-    }
-    final p = _syncProg;
-    if (p == null || p.committed == 0) {
-      return Row(
-        children: [
-          Icon(Icons.cloud_sync_outlined,
-              size: 18, color: Theme.of(context).colorScheme.secondary),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text('Drive自動同期：${_syncStatus ?? '待機中'}',
-                style: const TextStyle(fontSize: 13)),
-          ),
-        ],
-      );
-    }
-    final pct = (p.synced / p.committed).clamp(0.0, 1.0);
-    final backlogSecs = (p.backlogBytes / 4000).round(); // ~4000 B/s of audio
-    final rateKB = p.bytesPerSec / 1024;
-    final caught = p.caughtUp;
+  String _progressText(int done, int total) {
+    final pct = _progressValue(done, total) * 100;
+    return '${_fmtMB(done)} / ${_fmtMB(total)}  ${pct.toStringAsFixed(0)}%完了';
+  }
+
+  String _pullModeText() => switch (_schedule.mode) {
+        SyncMode.manual => '手動',
+        SyncMode.scheduledTime =>
+          'タイマー：毎日 ${SyncSchedule.fmtHm(_schedule.timeMinutes)}',
+        SyncMode.intervalWindow =>
+          'タイマー：${SyncSchedule.fmtHm(_schedule.windowStartMin)}〜${SyncSchedule.fmtHm(_schedule.windowEndMin)} / ${_schedule.intervalMin}分間隔',
+        SyncMode.continuous => '自動：常時',
+      };
+
+  Widget _sectionTitle({
+    required IconData icon,
+    required String title,
+    required String mode,
+  }) {
     final cs = Theme.of(context).colorScheme;
-
-    // Header: a live spinner + bold「取得中」while pulling, a check when caught
-    // up, or「待機中」when the schedule has it paused — so the state is obvious.
-    Widget header;
-    if (caught) {
-      header = Row(children: [
-        Icon(Icons.cloud_done_outlined, size: 18, color: cs.secondary),
-        const SizedBox(width: 8),
-        Expanded(
-          child: Text('同期済み — 最新です（${p.uploadedChunks}件アップ済み）',
-              style:
-                  const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
-        ),
-      ]);
-    } else if (p.fetching) {
-      header = Row(children: [
-        SizedBox(
-          width: 16,
-          height: 16,
-          child:
-              CircularProgressIndicator(strokeWidth: 2, color: cs.secondary),
-        ),
-        const SizedBox(width: 10),
-        Text('取得中',
-            style: TextStyle(
-                fontSize: 14,
-                fontWeight: FontWeight.w700,
-                color: cs.secondary)),
-        const Spacer(),
-        Text('${rateKB.toStringAsFixed(1)} KB/s',
-            style: TextStyle(fontSize: 12, color: dim)),
-      ]);
-    } else {
-      header = Row(children: [
-        Icon(Icons.pause_circle_outline, size: 18, color: dim),
-        const SizedBox(width: 8),
-        Expanded(
-          child: Text('待機中（スケジュール待ち）',
-              style: TextStyle(fontSize: 13, color: dim)),
-        ),
-      ]);
-    }
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+    final dim = cs.onSurface.withOpacity(0.6);
+    return Row(
       children: [
-        header,
-        const SizedBox(height: 8),
-        GradientProgressBar(value: pct, height: 8),
-        const SizedBox(height: 6),
-        Row(
-          children: [
-            Text('${_fmtMB(p.synced)} / ${_fmtMB(p.committed)}',
-                style:
-                    const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
-            const SizedBox(width: 8),
-            Text('(${(pct * 100).toStringAsFixed(1)}%)',
-                style: TextStyle(fontSize: 12, color: dim)),
-            const Spacer(),
-            if (!caught)
-              Text('残り ${_fmtMB(p.backlogBytes)}（〜${_fmtDur(backlogSecs)}）',
-                  style: TextStyle(fontSize: 12, color: dim)),
-          ],
+        Icon(icon, size: 20, color: cs.secondary),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(title,
+              style:
+                  const TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+        ),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+          decoration: BoxDecoration(
+            color: cs.secondary.withOpacity(0.12),
+            borderRadius: BorderRadius.circular(999),
+          ),
+          child: Text(mode, style: TextStyle(fontSize: 12, color: dim)),
         ),
       ],
     );
   }
 
-  Future<void> _uploadToDriver() async {
-    if (_uploading) return;
-    setState(() => _uploading = true);
-    try {
-      // Resolve the same dump-file path used by WrBleDevice._defaultSink().
-      final dir = await getApplicationDocumentsDirectory();
-      final id = widget.device.id;
-      // Find the most-recently modified dump file for this device.
-      final dumpDir = Directory('${dir.path}/wr_dumps');
-      File? dumpFile;
-      if (await dumpDir.exists()) {
-        final candidates = await dumpDir
-            .list()
-            .where((e) => e is File && e.path.contains(id))
-            .cast<File>()
-            .toList();
-        if (candidates.isNotEmpty) {
-          candidates.sort(
-            (a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()),
-          );
-          dumpFile = candidates.first;
-        }
-      }
+  Widget _buildProgressBlock({
+    required int done,
+    required int total,
+    required String status,
+  }) {
+    final dim = Theme.of(context).colorScheme.onSurface.withOpacity(0.6);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(status, style: TextStyle(fontSize: 13, color: dim)),
+        const SizedBox(height: 8),
+        GradientProgressBar(value: _progressValue(done, total), height: 8),
+        const SizedBox(height: 6),
+        Text(_progressText(done, total),
+            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+      ],
+    );
+  }
 
-      if (dumpFile == null) {
-        _showSnackBar('No dump file found for this device.', isError: true);
-        return;
-      }
+  Widget _buildSyncStatus() {
+    final p = _syncProg;
+    final done = p?.synced ?? 0;
+    final total = p?.committed ?? 0;
+    final status = p == null
+        ? '待機中${_syncStatus == null ? '' : '（$_syncStatus）'}'
+        : p.fetching
+            ? '吸出し中 ${p.bytesPerSec > 0 ? '(${(p.bytesPerSec / 1024).toStringAsFixed(1)} KB/s)' : ''}'
+            : p.caughtUp
+                ? '最新まで吸出し済み'
+                : '待機中（${_fmtMB(p.backlogBytes)}未吸出し）';
 
-      final remoteName =
-          '${id.replaceAll(':', '-')}-${DateTime.now().millisecondsSinceEpoch}.opus';
-      final fileId = await _uploader.uploadFile(dumpFile, remoteName);
-      _showSnackBar('Uploaded! Drive ID: $fileId');
-    } catch (e) {
-      _showSnackBar('Upload failed: $e', isError: true);
-    } finally {
-      if (mounted) setState(() => _uploading = false);
-    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _sectionTitle(
+          icon: Icons.sd_storage_outlined,
+          title: '吸出し',
+          mode: _pullModeText(),
+        ),
+        const SizedBox(height: 12),
+        _buildProgressBlock(done: done, total: total, status: status),
+        const SizedBox(height: 12),
+        SizedBox(
+          width: double.infinity,
+          child: GradientButton(
+            onPressed: _status == 'connected' && _sdSync != null
+                ? () {
+                    _sdSync?.triggerManualPull();
+                    _showSnackBar('吸出しを開始します…');
+                  }
+                : null,
+            icon: Icons.download,
+            label: '手動吸出し',
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildUploadStatus() {
+    final us = _driveStatus;
+    final auto = us?.autoUpload ?? _driveUploadAuto;
+    final done = us?.completedBytes ?? 0;
+    final total = us?.totalBytes ?? 0;
+    final status = us == null
+        ? '待機中'
+        : us.blockedNoWifi
+            ? 'WiFi待ち（WiFiのみモード）'
+            : us.uploading
+                ? 'アップロード中：${us.currentFile ?? ''}'
+                : us.waitingForManual
+                    ? '手動待ち（未アップロード ${us.pendingFiles}件）'
+                    : us.pendingFiles > 0
+                        ? '待機中（未アップロード ${us.pendingFiles}件）'
+                        : '未アップロードなし';
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _sectionTitle(
+          icon: Icons.cloud_upload_outlined,
+          title: 'Driveアップロード',
+          mode: auto ? '自動' : '手動',
+        ),
+        const SizedBox(height: 12),
+        _buildProgressBlock(done: done, total: total, status: status),
+        const SizedBox(height: 12),
+        SizedBox(
+          width: double.infinity,
+          child: GradientButton(
+            onPressed: _status == 'connected' && _sdSync != null
+                ? () {
+                    _sdSync?.triggerManualUpload();
+                    _showSnackBar('Drive同期を開始します…');
+                  }
+                : null,
+            icon: Icons.cloud_upload,
+            label: '手動同期',
+          ),
+        ),
+      ],
+    );
   }
 
   Future<void> _sleepDevice() async {
@@ -357,7 +378,9 @@ class _DevicePageState extends State<DevicePage> {
         ? '接続中'
         : _status == 'disconnected'
             ? '未接続'
-            : '接続中…';
+            : _status.startsWith('error:')
+                ? _status
+                : '接続中…';
     return Scaffold(
       appBar: AppBar(
         title: const MojioWordmark(fontSize: 24),
@@ -415,6 +438,16 @@ class _DevicePageState extends State<DevicePage> {
               ),
             ),
           ),
+          IconButton(
+            icon: const Icon(Icons.description_outlined),
+            tooltip: 'Transcripts',
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => TranscriptsPage(uploader: _uploader),
+              ),
+            ),
+          ),
           if (_recording != null)
             IconButton(
               icon: const Icon(Icons.bedtime_outlined),
@@ -431,13 +464,9 @@ class _DevicePageState extends State<DevicePage> {
                   builder: (_) => SettingsPage(uploader: _uploader),
                 ),
               );
-              // Re-read the auto-upload preference in case it changed, and
-              // start/stop the SD-chunk sync to match.
-              final prefs = await SharedPreferences.getInstance();
               if (mounted) {
-                setState(
-                    () => _autoUpload = prefs.getBool(_kAutoUpload) ?? true);
-                _startSdSyncIfEnabled();
+                await _loadSyncSettings();
+                _startSdSync();
               }
             },
           ),
@@ -555,7 +584,7 @@ class _DevicePageState extends State<DevicePage> {
               ],
             ),
           ),
-          if (_gainQ4 != null) ...[
+          if (_micGainLevel != null) ...[
             const SizedBox(height: 14),
             _card(
               Column(
@@ -568,7 +597,7 @@ class _DevicePageState extends State<DevicePage> {
                       const Text('マイクゲイン',
                           style: TextStyle(fontWeight: FontWeight.w600)),
                       const Spacer(),
-                      Text('${(_gainQ4! / 16).toStringAsFixed(2)}x',
+                      Text(_micGainLabel(_micGainLevel!),
                           style: Theme.of(context).textTheme.titleMedium),
                     ],
                   ),
@@ -581,16 +610,16 @@ class _DevicePageState extends State<DevicePage> {
                           style: TextStyle(fontSize: 11, color: dim)),
                     ),
                   Slider(
-                    min: 4,
-                    max: 128,
-                    divisions: 31,
-                    value: _gainQ4!.clamp(4, 128).toDouble(),
-                    label: '${(_gainQ4! / 16).toStringAsFixed(2)}x',
-                    onChanged: (v) => setState(() => _gainQ4 = v.round()),
+                    min: 0,
+                    max: 8,
+                    divisions: 8,
+                    value: _micGainLevel!.clamp(0, 8).toDouble(),
+                    label: _micGainLabel(_micGainLevel!),
+                    onChanged: (v) => setState(() => _micGainLevel = v.round()),
                     onChangeEnd: (v) async {
                       final g = v.round();
                       try {
-                        await widget.device.setGainQ4(g);
+                        await widget.device.setMicGainLevel(g);
                       } catch (e) {
                         _showSnackBar('ゲイン設定に失敗しました: $e', isError: true);
                       }
@@ -631,15 +660,17 @@ class _DevicePageState extends State<DevicePage> {
           ],
           const SizedBox(height: 14),
           _card(_buildSyncStatus()),
+          const SizedBox(height: 14),
+          _card(_buildUploadStatus()),
         ],
-      ),
-      floatingActionButton: GradientButton(
-        onPressed: _uploading ? null : _uploadToDriver,
-        icon: _uploading ? null : Icons.cloud_upload,
-        label: _uploading ? 'アップロード中…' : 'Driveにアップロード',
       ),
     );
   }
+}
+
+String _micGainLabel(int level) {
+  final i = level.clamp(0, _micGainLabels.length - 1);
+  return _micGainLabels[i];
 }
 
 extension on BluetoothConnectionState {

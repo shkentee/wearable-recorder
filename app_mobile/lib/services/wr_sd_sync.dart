@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -9,6 +10,45 @@ import 'wr_ble_device.dart';
 import 'wr_drive_uploader.dart';
 import 'wr_storage_client.dart';
 import 'wr_sync_schedule.dart';
+
+/// SharedPreferences key: upload only over Wi-Fi (don't use mobile data).
+const kWifiOnlyKey = 'wr_upload_wifi_only';
+
+/// SharedPreferences key: upload queued chunks to Drive automatically.
+const kDriveUploadAutoKey = 'wr_drive_upload_auto';
+
+/// Live state of the Drive upload queue (chunks fetched from the device but not
+/// yet uploaded to Google Drive), for the UI.
+class WrUploadStatus {
+  const WrUploadStatus({
+    required this.pendingFiles,
+    required this.pendingBytes,
+    required this.completedBytes,
+    required this.totalBytes,
+    required this.uploading,
+    required this.blockedNoWifi,
+    required this.autoUpload,
+    required this.waitingForManual,
+    required this.uploadedChunks,
+    this.currentFile,
+  });
+
+  final int pendingFiles; // chunks waiting in the outbox
+  final int pendingBytes; // total bytes waiting
+  final int completedBytes; // bytes uploaded in the current visible batch
+  final int totalBytes; // total bytes in the current visible batch
+  final bool uploading; // a chunk is being sent right now
+  final bool blockedNoWifi; // Wi-Fi-only is on and we're not on Wi-Fi
+  final bool autoUpload; // true = queue drains automatically
+  final bool waitingForManual; // manual mode with queued files waiting
+  final int uploadedChunks; // chunks uploaded this app run
+  final String? currentFile; // chunk being uploaded now
+
+  double get passPct => totalBytes <= 0 ? 1 : completedBytes / totalBytes;
+
+  bool get idle =>
+      !uploading && !blockedNoWifi && !waitingForManual && pendingFiles == 0;
+}
 
 /// Pulls the device's single growing recording file off the SD card
 /// incrementally (omi-style) and re-emits it as discrete, complete,
@@ -79,10 +119,28 @@ class WrSdSync {
   WrStorageSession? _session;
   int uploadedChunks = 0;
 
+  // Manual-mode trigger: in SyncMode.manual the loop only fetches when the user
+  // taps the pull button (sets this via [triggerManualPull]); else it idles.
+  bool _manualTrigger = false;
+
+  // Upload (outbox -> Drive) state, decoupled from fetch so the queue is visible
+  // in the UI and can be gated by Wi-Fi.
+  bool _wifiOnly = false;
+  bool _driveUploadAuto = true;
+  bool _manualUploadTrigger = false;
+  bool _uploadingNow = false;
+  bool _blockedNoWifi = false;
+  bool _waitingForManualUpload = false;
+  String? _curUploadName;
+  int _uploadDoneBytes = 0;
+  int _uploadTotalBytes = 0;
+
   // Auto-pull schedule (loaded from prefs when the loop starts).
   SyncSchedule _schedule = const SyncSchedule();
   DateTime? _lastScheduledDate; // scheduledTime: last day a run completed
   DateTime? _lastIntervalRun; // intervalWindow: last completion time
+  bool _timedDrainActive = false;
+  bool _manualDrainActive = false;
 
   // Closed files that errored mid-fetch (e.g. SD bad sector -> fs_read -5).
   // Skipped for the rest of this session so one unreadable file can't block the
@@ -110,6 +168,16 @@ class WrSdSync {
   final _progress = StreamController<WrSyncProgress>.broadcast();
   Stream<WrSyncProgress> get progress => _progress.stream;
 
+  final _uploadStatus = StreamController<WrUploadStatus>.broadcast();
+  Stream<WrUploadStatus> get uploadStatus => _uploadStatus.stream;
+
+  /// Manually trigger a fetch run (used by the main-screen pull button, and
+  /// effective in manual mode). Harmless in the other modes.
+  void triggerManualPull() => _manualTrigger = true;
+
+  /// Manually trigger Drive upload of queued chunks.
+  void triggerManualUpload() => _manualUploadTrigger = true;
+
   void _emitProgress({bool fetching = false}) {
     if (_progress.isClosed) return;
     _progress.add(WrSyncProgress(
@@ -129,7 +197,8 @@ class WrSdSync {
     if (_running) return;
     _idlePoll = idlePoll;
     _running = true;
-    _loop();
+    _loop(); // fetch device -> outbox
+    _uploadLoop(); // outbox -> Drive (independent, Wi-Fi gated)
   }
 
   Future<void> stop() async {
@@ -150,6 +219,7 @@ class WrSdSync {
     await stop();
     await _events.close();
     await _progress.close();
+    await _uploadStatus.close();
   }
 
   // ---- persistence (survive app restart / reconnect) --------------------
@@ -226,19 +296,47 @@ class WrSdSync {
 
   Future<void> _emitChunk(Uint8List bytes) async {
     final name = _chunkName(_chunkIndex);
-    final dir = await getTemporaryDirectory();
-    final tmp = File('${dir.path}/$name');
-    await tmp.writeAsBytes(bytes, flush: true);
+    final dir = await _outboxDir();
+    final f = File('${dir.path}/$name');
+    await f.writeAsBytes(bytes, flush: true);
+    _chunkIndex++;
+    if (!_events.isClosed) _events.add('queued $name (${bytes.length}B)');
+    await _emitUploadStatus();
+  }
+
+  Future<Directory> _outboxDir() async {
+    final base = await getApplicationSupportDirectory();
+    final dir = Directory('${base.path}/outbox');
+    if (!await dir.exists()) await dir.create(recursive: true);
+    return dir;
+  }
+
+  Future<void> _emitUploadStatus() async {
+    if (_uploadStatus.isClosed) return;
     try {
-      final id = await uploader.uploadIfNew(tmp, name);
-      _chunkIndex++;
-      if (id != null) {
-        uploadedChunks++;
-        _events.add('uploaded $name (${bytes.length}B)');
+      final dir = await _outboxDir();
+      final files =
+          await dir.list().where((e) => e is File).cast<File>().toList();
+      files.sort((a, b) => a.path.compareTo(b.path));
+      int totalBytes = 0;
+      for (final f in files) {
+        try {
+          totalBytes += await f.length();
+        } catch (_) {}
       }
-    } finally {
-      if (await tmp.exists()) await tmp.delete();
-    }
+      _uploadStatus.add(WrUploadStatus(
+        pendingFiles: files.length,
+        pendingBytes: totalBytes,
+        completedBytes: _uploadingNow ? _uploadDoneBytes : 0,
+        totalBytes: _uploadingNow ? _uploadTotalBytes : totalBytes,
+        uploading: _uploadingNow,
+        blockedNoWifi: _blockedNoWifi,
+        autoUpload: _driveUploadAuto,
+        waitingForManual: _waitingForManualUpload,
+        uploadedChunks: uploadedChunks,
+        currentFile: _curUploadName,
+      ));
+    } catch (_) {}
   }
 
   /// Cuts and uploads every full chunk in [_pending]. With [force], also emits
@@ -267,18 +365,128 @@ class WrSdSync {
 
   // ---- main loop --------------------------------------------------------
 
+  Future<void> _uploadLoop() async {
+    while (_running) {
+      final prefs = await SharedPreferences.getInstance();
+      _wifiOnly = prefs.getBool(kWifiOnlyKey) ?? false;
+      _driveUploadAuto = prefs.getBool(kDriveUploadAutoKey) ?? true;
+      _uploadDoneBytes = 0;
+      _uploadTotalBytes = 0;
+
+      final dir = await _outboxDir();
+      List<({File file, int length})> pending;
+      try {
+        final files =
+            await dir.list().where((e) => e is File).cast<File>().toList();
+        files.sort((a, b) => a.path.compareTo(b.path));
+        pending = [];
+        for (final f in files) {
+          try {
+            pending.add((file: f, length: await f.length()));
+          } catch (_) {}
+        }
+      } catch (_) {
+        await Future<void>.delayed(const Duration(seconds: 5));
+        continue;
+      }
+
+      if (pending.isEmpty) {
+        _waitingForManualUpload = false;
+        _uploadingNow = false;
+        _curUploadName = null;
+        await _emitUploadStatus();
+        await Future<void>.delayed(const Duration(seconds: 5));
+        continue;
+      }
+
+      if (!_driveUploadAuto && !_manualUploadTrigger) {
+        _waitingForManualUpload = true;
+        _uploadingNow = false;
+        _curUploadName = null;
+        await _emitUploadStatus();
+        await Future<void>.delayed(const Duration(seconds: 5));
+        continue;
+      }
+      _manualUploadTrigger = false;
+      _waitingForManualUpload = false;
+
+      if (_wifiOnly) {
+        final result = await Connectivity().checkConnectivity();
+        final onWifi = result.contains(ConnectivityResult.wifi);
+        if (!onWifi) {
+          _blockedNoWifi = true;
+          _uploadingNow = false;
+          await _emitUploadStatus();
+          await Future<void>.delayed(const Duration(seconds: 15));
+          continue;
+        }
+      }
+      _blockedNoWifi = false;
+
+      _uploadTotalBytes = pending.fold<int>(0, (sum, p) => sum + p.length);
+      _uploadDoneBytes = 0;
+      for (final item in pending) {
+        if (!_running) break;
+        if (_wifiOnly) {
+          final result = await Connectivity().checkConnectivity();
+          if (!result.contains(ConnectivityResult.wifi)) {
+            _blockedNoWifi = true;
+            _uploadingNow = false;
+            await _emitUploadStatus();
+            break;
+          }
+        }
+        final f = item.file;
+        final name = f.uri.pathSegments.last;
+        _uploadingNow = true;
+        _curUploadName = name;
+        await _emitUploadStatus();
+        try {
+          final id = await uploader.uploadIfNew(f, name);
+          if (id != null) {
+            uploadedChunks++;
+            if (!_events.isClosed) _events.add('uploaded $name');
+          }
+          await f.delete();
+          _uploadDoneBytes += item.length;
+          await _emitUploadStatus();
+        } catch (e) {
+          if (!_events.isClosed) _events.add('upload error $name: $e');
+          await Future<void>.delayed(const Duration(seconds: 5));
+          break;
+        }
+      }
+      _uploadingNow = false;
+      _curUploadName = null;
+      await _emitUploadStatus();
+      if (_uploadDoneBytes < _uploadTotalBytes) {
+        await Future<void>.delayed(const Duration(seconds: 5));
+      }
+    }
+  }
+
   /// Continuous driver: drain back-to-back while a backlog remains, otherwise
   /// idle-poll. Runs for the whole connection (only [stop] ends it). A transient
   /// BLE error reopens the cheap storage session (no reconnect) and retries
   /// within seconds instead of stalling a fixed interval — the bug that let the
   /// device out-record the old 64 KB-per-30 s sync.
   Future<void> _loop() async {
-    _schedule = await SyncSchedule.load();
     while (_running) {
+      _schedule = await SyncSchedule.load();
       final now = DateTime.now();
-      if (!_schedule.shouldStart(now,
-          lastScheduledDate: _lastScheduledDate,
-          lastIntervalRun: _lastIntervalRun)) {
+      if (_manualTrigger) {
+        _manualTrigger = false;
+        _manualDrainActive = true;
+      } else if (_schedule.mode == SyncMode.manual) {
+        _timedDrainActive = false;
+        if (!_manualDrainActive) {
+          await Future<void>.delayed(const Duration(seconds: 5));
+          continue;
+        }
+      } else if (!_timedDrainActive &&
+          !_schedule.shouldStart(now,
+              lastScheduledDate: _lastScheduledDate,
+              lastIntervalRun: _lastIntervalRun)) {
         // Outside the configured schedule — re-check shortly.
         await Future<void>.delayed(const Duration(seconds: 20));
         continue;
@@ -301,6 +509,24 @@ class WrSdSync {
         continue; // retry without marking this run complete
       }
 
+      if (_schedule.mode == SyncMode.manual) {
+        if (pulled > 0) {
+          // Manual pull means "catch up now", not "fetch one tiny pass".
+          await Future<void>.delayed(const Duration(milliseconds: 200));
+          continue;
+        }
+        _manualDrainActive = false;
+      } else if (_schedule.mode != SyncMode.continuous && pulled > 0) {
+        // A timed run is only complete once the backlog is empty. Previously an
+        // hourly run pulled one small pass, then waited another hour even when
+        // more SD audio remained queued on the device.
+        _timedDrainActive = true;
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+        continue;
+      }
+
+      _timedDrainActive = false;
+
       // Record completion (gates the scheduled / interval modes).
       final done = DateTime.now();
       _lastScheduledDate = done;
@@ -308,9 +534,13 @@ class WrSdSync {
 
       // While a backlog remains, loop promptly to keep draining; once fully
       // caught up, idle-poll. Timed modes just re-check their trigger.
-      await Future<void>.delayed(_schedule.mode != SyncMode.continuous
-          ? const Duration(seconds: 20)
-          : (pulled > 0 ? const Duration(milliseconds: 200) : _idlePoll));
+      if (_schedule.mode == SyncMode.manual) {
+        await Future<void>.delayed(const Duration(milliseconds: 500));
+      } else {
+        await Future<void>.delayed(_schedule.mode != SyncMode.continuous
+            ? const Duration(seconds: 20)
+            : (pulled > 0 ? const Duration(milliseconds: 200) : _idlePoll));
+      }
     }
   }
 
@@ -415,15 +645,18 @@ class WrSdSync {
       return 0;
     }
     final prefs = await SharedPreferences.getInstance();
+    var totalPulled = 0;
     for (final name in files) {
       if (!_running) break;
       if (!name.endsWith('.opus_sd')) continue;
       if (name.startsWith('battlog')) continue; // measurement instrument files
       if (_failedFiles.contains(name)) continue; // unreadable this session
       if (prefs.getBool('wr_sync_done_$name') ?? false) continue;
-      return await _drainClosedFile(name);
+      final pulled = await _drainClosedFile(name);
+      totalPulled += pulled;
+      if (pulled > 0) break;
     }
-    return 0;
+    return totalPulled;
   }
 
   /// Drain one pass (<= [_maxBytesPerPass]) of a closed file, chunking +
@@ -467,9 +700,13 @@ class WrSdSync {
 
         await _persistOffset();
         final cut = await _flushPending();
-        if (cut || (windows % 8) == 0) await _persistPending();
+        if (cut || (windows % 8) == 0) {
+          await _persistPending();
+        }
         _emitProgress(fetching: true);
-        if (_offset >= committed) break;
+        if (_offset >= committed) {
+          break;
+        }
       }
     } catch (e) {
       // This file won't read past _offset (e.g. SD bad sector -> fs_read -5).
@@ -478,7 +715,9 @@ class WrSdSync {
       _failedFiles.add(name);
       await _persistOffset();
       await _persistPending();
-      if (!_events.isClosed) _events.add('skip $name @$_offset (read error): $e');
+      if (!_events.isClosed) {
+        _events.add('skip $name @$_offset (read error): $e');
+      }
       _emitProgress();
       return pulled;
     }

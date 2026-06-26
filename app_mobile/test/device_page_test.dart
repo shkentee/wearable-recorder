@@ -27,6 +27,7 @@ void main() {
   late StreamController<int> bytesCtrl;
   late StreamController<int> lostCtrl;
   late StreamController<int> batteryCtrl;
+  late StreamController<double> audioCtrl;
   late Completer<void> connectCompleter;
   late _MockUploader mockUploader;
 
@@ -40,6 +41,7 @@ void main() {
     bytesCtrl = StreamController<int>.broadcast();
     lostCtrl = StreamController<int>.broadcast();
     batteryCtrl = StreamController<int>.broadcast();
+    audioCtrl = StreamController<double>.broadcast();
     connectCompleter = Completer<void>();
     mockUploader = _MockUploader();
 
@@ -50,11 +52,18 @@ void main() {
     when(() => device.bytesSaved).thenAnswer((_) => bytesCtrl.stream);
     when(() => device.lostPackets).thenAnswer((_) => lostCtrl.stream);
     when(() => device.batteryLevel).thenAnswer((_) => batteryCtrl.stream);
+    when(() => device.audioLevel).thenAnswer((_) => audioCtrl.stream);
     // DevicePage._connect calls device.connect() with no args, so we
     // only need to stub that form. Returning a Completer-controlled
     // future lets individual tests decide when to resolve / fail it.
     when(() => device.connect()).thenAnswer((_) => connectCompleter.future);
     when(() => device.dispose()).thenAnswer((_) async {});
+    when(() => device.readRecordingState()).thenAnswer((_) async => null);
+    when(() => device.readMicGainLevel()).thenAnswer((_) async => null);
+    when(() => device.setLiveMonitor(any())).thenAnswer((_) async {});
+    when(() => device.setRecording(any())).thenAnswer((_) async {});
+    when(() => device.setMicGainLevel(any())).thenAnswer((_) async {});
+    when(() => device.sleepDevice()).thenAnswer((_) async => true);
     // StoragePage.initState calls openStorageSession(); null = service not found.
     when(() => device.openStorageSession()).thenAnswer((_) async => null);
     // DriveFilesPage.initState calls listFiles().
@@ -68,6 +77,7 @@ void main() {
     await bytesCtrl.close();
     await lostCtrl.close();
     await batteryCtrl.close();
+    await audioCtrl.close();
   });
 
   /// Default helper — no uploader override (used by tests that don't navigate
@@ -88,13 +98,10 @@ void main() {
       (tester) async {
     await tester.pumpWidget(hostedDevicePage());
     // initState fires connect() but we never complete the future, so
-    // the page should still be in its initial 'connecting…' state.
-    expect(find.text('status: connecting…'), findsOneWidget);
-    expect(find.text('audioCodec packets: 0'), findsOneWidget);
-    expect(find.text('Saved bytes: 0'), findsOneWidget);
-    expect(find.text('id: aa:bb:cc:dd:ee:01'), findsOneWidget);
-    // App bar title comes from device.name.
-    expect(find.text('Omi DK1'), findsOneWidget);
+    // the page should still be in its initial connecting state.
+    expect(find.text('Mojio Device'), findsOneWidget);
+    expect(find.text('接続中…'), findsOneWidget);
+    expect(find.text('受信 0 ・ 保存 0.0MB ・ ロスト 0'), findsOneWidget);
   });
 
   testWidgets('reflects connection state transitions on the state stream',
@@ -103,11 +110,11 @@ void main() {
 
     stateCtrl.add(BluetoothConnectionState.connected);
     await tester.pumpAndSettle();
-    expect(find.text('status: connected'), findsOneWidget);
+    expect(find.text('接続中'), findsOneWidget);
 
     stateCtrl.add(BluetoothConnectionState.disconnected);
     await tester.pumpAndSettle();
-    expect(find.text('status: disconnected'), findsOneWidget);
+    expect(find.text('未接続'), findsOneWidget);
   });
 
   testWidgets('packet count text increments as packetCount stream emits',
@@ -116,15 +123,15 @@ void main() {
 
     packetCtrl.add(1);
     await tester.pumpAndSettle();
-    expect(find.text('audioCodec packets: 1'), findsOneWidget);
+    expect(find.text('受信 1 ・ 保存 0.0MB ・ ロスト 0'), findsOneWidget);
 
     packetCtrl.add(7);
     await tester.pumpAndSettle();
-    expect(find.text('audioCodec packets: 7'), findsOneWidget);
+    expect(find.text('受信 7 ・ 保存 0.0MB ・ ロスト 0'), findsOneWidget);
 
     packetCtrl.add(123);
     await tester.pumpAndSettle();
-    expect(find.text('audioCodec packets: 123'), findsOneWidget);
+    expect(find.text('受信 123 ・ 保存 0.0MB ・ ロスト 0'), findsOneWidget);
   });
 
   testWidgets('saved-bytes text updates when bytesSaved stream emits',
@@ -133,11 +140,11 @@ void main() {
 
     bytesCtrl.add(160);
     await tester.pumpAndSettle();
-    expect(find.text('Saved bytes: 160'), findsOneWidget);
+    expect(find.text('受信 0 ・ 保存 0.0MB ・ ロスト 0'), findsOneWidget);
 
-    bytesCtrl.add(4096);
+    bytesCtrl.add(2 * 1024 * 1024);
     await tester.pumpAndSettle();
-    expect(find.text('Saved bytes: 4096'), findsOneWidget);
+    expect(find.text('受信 0 ・ 保存 2.0MB ・ ロスト 0'), findsOneWidget);
   });
 
   testWidgets('shows error status when connect() throws', (tester) async {
@@ -170,8 +177,7 @@ void main() {
     verify(() => device.connect()).called(1);
   });
 
-  testWidgets(
-      'sd_storage_outlined button navigates to StoragePage',
+  testWidgets('sd_storage_outlined button navigates to StoragePage',
       (tester) async {
     await tester.pumpWidget(hostedDevicePage());
 
@@ -179,17 +185,15 @@ void main() {
     connectCompleter.complete();
     await tester.pumpAndSettle();
 
-    // Tap the SD-card icon in the AppBar.
-    await tester.tap(find.byIcon(Icons.sd_storage_outlined));
+    // Tap the SD-card action in the AppBar.
+    await tester.tap(find.byTooltip('Device SD files'));
     await tester.pumpAndSettle();
 
     // StoragePage should now be visible.
     expect(find.byType(StoragePage), findsOneWidget);
   });
 
-  testWidgets(
-      'cloud_queue button navigates to DriveFilesPage',
-      (tester) async {
+  testWidgets('cloud_queue button navigates to DriveFilesPage', (tester) async {
     // Use the helper that injects the mock uploader so DriveFilesPage never
     // tries to reach real Google Sign-In / Drive APIs.
     await tester.pumpWidget(hostedDevicePageWithUploader());
@@ -198,8 +202,8 @@ void main() {
     connectCompleter.complete();
     await tester.pumpAndSettle();
 
-    // Tap the cloud-queue icon in the AppBar.
-    await tester.tap(find.byIcon(Icons.cloud_queue));
+    // Tap the cloud-queue action in the AppBar.
+    await tester.tap(find.byTooltip('Drive recordings'));
     await tester.pumpAndSettle();
 
     // DriveFilesPage should now be visible.

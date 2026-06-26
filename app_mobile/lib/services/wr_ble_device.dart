@@ -294,8 +294,7 @@ class WrBleDevice {
   void _updateMeter(List<int> opusFrame) {
     if (opusFrame.isEmpty || _audioLevel.isClosed) return;
     try {
-      _meterDecoder ??=
-          SimpleOpusDecoder(sampleRate: 16000, channels: 1);
+      _meterDecoder ??= SimpleOpusDecoder(sampleRate: 16000, channels: 1);
       final Int16List pcm =
           _meterDecoder!.decode(input: Uint8List.fromList(opusFrame));
       if (pcm.isEmpty) return;
@@ -333,8 +332,8 @@ class WrBleDevice {
     final svcs = _discoveredServices;
     if (svcs == null) return null;
     try {
-      final svc = svcs.firstWhere(
-          (s) => s.serviceUuid == Guid(WrUuids.recControlService));
+      final svc = svcs
+          .firstWhere((s) => s.serviceUuid == Guid(WrUuids.recControlService));
       return svc.characteristics.firstWhere(
           (c) => c.characteristicUuid == Guid(WrUuids.recControlChar));
     } catch (_) {
@@ -363,40 +362,40 @@ class WrBleDevice {
     await c.write([on ? 1 : 0], withoutResponse: false);
   }
 
-  /// Finds the mic-gain characteristic (D10), or null on firmware that doesn't
+  /// Finds Omi's mic-gain characteristic, or null on firmware that doesn't
   /// expose it.
   BluetoothCharacteristic? _gainChar() {
     final svcs = _discoveredServices;
     if (svcs == null) return null;
     try {
-      final svc = svcs.firstWhere(
-          (s) => s.serviceUuid == Guid(WrUuids.gainService));
-      return svc.characteristics.firstWhere(
-          (c) => c.characteristicUuid == Guid(WrUuids.gainChar));
+      final svc = svcs
+          .firstWhere((s) => s.serviceUuid == Guid(WrUuids.settingsService));
+      return svc.characteristics
+          .firstWhere((c) => c.characteristicUuid == Guid(WrUuids.micGainChar));
     } catch (_) {
       return null;
     }
   }
 
-  /// Reads the current capture gain in Q4 fixed point (16 = 1.0x). Returns null
-  /// if the firmware doesn't support gain control (older builds).
-  Future<int?> readGainQ4() async {
+  /// Reads the current Omi mic gain level (0..8). Returns null if the firmware
+  /// doesn't support gain control.
+  Future<int?> readMicGainLevel() async {
     final c = _gainChar();
     if (c == null) return null;
     try {
       final v = await c.read();
-      return v.isNotEmpty ? v[0] : null;
+      return v.isNotEmpty ? v[0].clamp(0, 8) : null;
     } catch (_) {
       return null;
     }
   }
 
-  /// Sets the capture gain in Q4 fixed point (16 = 1.0x). Clamped to [4, 255].
-  /// No-op if the firmware doesn't expose gain control.
-  Future<void> setGainQ4(int gainQ4) async {
+  /// Sets the current Omi mic gain level (0..8). No-op if the firmware doesn't
+  /// expose gain control.
+  Future<void> setMicGainLevel(int level) async {
     final c = _gainChar();
     if (c == null) return;
-    final g = gainQ4 < 4 ? 4 : (gainQ4 > 255 ? 255 : gainQ4);
+    final g = level.clamp(0, 8);
     await c.write([g], withoutResponse: false);
   }
 

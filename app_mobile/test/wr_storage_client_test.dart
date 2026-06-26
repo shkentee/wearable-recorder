@@ -19,9 +19,9 @@ void main() {
 
     when(() => mockStream.setNotifyValue(true)).thenAnswer((_) async => true);
     when(() => mockStream.setNotifyValue(false)).thenAnswer((_) async => true);
-    when(() => mockStream.onValueReceived)
-        .thenAnswer((_) => streamCtrl.stream);
-    when(() => mockCtrl.write(any(), withoutResponse: any(named: 'withoutResponse')))
+    when(() => mockStream.onValueReceived).thenAnswer((_) => streamCtrl.stream);
+    when(() => mockCtrl.write(any(),
+            withoutResponse: any(named: 'withoutResponse')))
         .thenAnswer((_) async {});
   });
 
@@ -108,7 +108,12 @@ void main() {
         () => mockCtrl.write(captureAny(),
             withoutResponse: any(named: 'withoutResponse')),
       ).captured;
-      expect(captured.first, [0x01, ...'test.opus'.codeUnits]);
+      expect(captured.first, [
+        0x01,
+        0x00, 0x00, 0x00, 0x00, // offset = 0
+        0x00, 0x00, 0x00, 0x00, // length = 0, fetch to EOF
+        ...'test.opus'.codeUnits,
+      ]);
     });
 
     test('reports progress via onProgress callback', () async {
@@ -120,7 +125,7 @@ void main() {
       );
       await Future.microtask(() {});
       streamCtrl.add([0x02, 0xAA, 0xBB]); // 2 bytes
-      streamCtrl.add([0x02, 0xCC]);        // 1 byte
+      streamCtrl.add([0x02, 0xCC]); // 1 byte
       streamCtrl.add([0x03]);
       await future;
 

@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:convert';
 
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:googleapis/drive/v3.dart' as drive;
@@ -14,7 +15,11 @@ const _kOpusMime = 'audio/ogg; codecs=opus';
 
 /// The default Drive folder that recordings are stored under (user-overridable
 /// via the [_kFolderKey] preference, set on the Settings page).
-const _kFolderName = 'wearable-recordings';
+const _kFolderName = 'recordings';
+
+/// Project default Drive folder. This matches the PC-side Drive mirror at
+/// `C:\Users\knsol\coai\recordings`.
+const _kDefaultFolderId = '1IPNXw8EzMz6u6nGUo5H1xtuwkI4NKayJ';
 
 /// SharedPreferences key holding the user-chosen destination folder name
 /// (shown in Settings; also the create-by-name fallback).
@@ -27,6 +32,24 @@ const _kFolderIdKey = 'wr_drive_folder_id';
 
 /// Drive API scope that allows creating / uploading files only.
 const _kDriveScope = drive.DriveApi.driveFileScope;
+
+/// Read scope is needed for transcript markdown files created by the PC-side
+/// transcription pipeline, not necessarily by this mobile app.
+const _kDriveReadScope = drive.DriveApi.driveReadonlyScope;
+
+class WrTranscriptFile {
+  const WrTranscriptFile({
+    required this.id,
+    required this.name,
+    this.modifiedTime,
+    this.sizeBytes,
+  });
+
+  final String id;
+  final String name;
+  final DateTime? modifiedTime;
+  final int? sizeBytes;
+}
 
 // ---------------------------------------------------------------------------
 // Private HTTP client that injects Google auth headers into every request.
@@ -72,20 +95,23 @@ class _GoogleAuthClient extends http.BaseClient {
 /// ```
 class WrDriveUploader {
   WrDriveUploader({GoogleSignIn? googleSignIn})
-      : _googleSignIn =
-            googleSignIn ?? GoogleSignIn(scopes: [_kDriveScope]),
-        _apiOverride = null;
+      : _googleSignIn = googleSignIn ??
+            GoogleSignIn(scopes: [_kDriveScope, _kDriveReadScope]),
+        _apiOverride = null,
+        _useDefaultFolderId = true;
 
   /// Test-only constructor that bypasses Google sign-in entirely and uses the
   /// provided [drive.DriveApi] mock for all Drive calls.
   WrDriveUploader.withApi(drive.DriveApi api)
-      : _googleSignIn = GoogleSignIn(scopes: [_kDriveScope]),
-        _apiOverride = api;
+      : _googleSignIn = GoogleSignIn(scopes: [_kDriveScope, _kDriveReadScope]),
+        _apiOverride = api,
+        _useDefaultFolderId = false;
 
   final GoogleSignIn _googleSignIn;
 
   /// When non-null, [_buildApi] returns this directly (used in tests).
   final drive.DriveApi? _apiOverride;
+  final bool _useDefaultFolderId;
 
   // Cache the folder ID so repeated uploads in one session skip the search.
   String? _cachedFolderId;
@@ -175,8 +201,8 @@ class WrDriveUploader {
       }
       var meta = _metaCache[pid];
       if (meta == null) {
-        meta = await api.files.get(pid, $fields: 'id,name,parents')
-            as drive.File;
+        meta =
+            await api.files.get(pid, $fields: 'id,name,parents') as drive.File;
         _metaCache[pid] = meta;
       }
       names.add(meta.name ?? '…');
@@ -201,7 +227,8 @@ class WrDriveUploader {
   Future<String?> _configuredFolderId() async {
     final prefs = await SharedPreferences.getInstance();
     final id = prefs.getString(_kFolderIdKey)?.trim();
-    return (id == null || id.isEmpty) ? null : id;
+    if (id != null && id.isNotEmpty) return id;
+    return _useDefaultFolderId ? _kDefaultFolderId : null;
   }
 
   /// Returns the Drive folder ID for the configured folder, creating it if
@@ -285,6 +312,134 @@ class WrDriveUploader {
   Future<void> deleteFile(String fileId) async {
     final api = await _buildApi();
     await api.files.delete(fileId);
+  }
+
+  Future<String?> _findChildFolder(
+    drive.DriveApi api, {
+    required String parentId,
+    required String name,
+  }) async {
+    final escaped = name.replaceAll("'", r"\'");
+    final result = await api.files.list(
+      q: "'$parentId' in parents and "
+          "mimeType='application/vnd.google-apps.folder' and "
+          "name='$escaped' and trashed=false",
+      spaces: 'drive',
+      $fields: 'files(id,name)',
+      pageSize: 1,
+    );
+    final files = result.files;
+    if (files == null || files.isEmpty) return null;
+    return files.first.id;
+  }
+
+  Future<List<String>> _findFolderIdsByName(
+    drive.DriveApi api,
+    String name,
+  ) async {
+    final escaped = name.replaceAll("'", r"\'");
+    final result = await api.files.list(
+      q: "mimeType='application/vnd.google-apps.folder' and "
+          "name='$escaped' and trashed=false",
+      spaces: 'drive',
+      $fields: 'files(id,name)',
+      pageSize: 20,
+    );
+    return (result.files ?? const <drive.File>[])
+        .map((f) => f.id)
+        .whereType<String>()
+        .toList();
+  }
+
+  Future<List<WrTranscriptFile>> _listTranscriptMarkdownFiles(
+    drive.DriveApi api,
+    String transcriptsId,
+  ) async {
+    final result = await api.files.list(
+      q: "'$transcriptsId' in parents and "
+          "name contains '.md' and trashed=false",
+      spaces: 'drive',
+      $fields: 'files(id,name,modifiedTime,size)',
+      orderBy: 'modifiedTime desc',
+      pageSize: 200,
+    );
+
+    return (result.files ?? const <drive.File>[])
+        .where(
+            (f) => f.id != null && (f.name ?? '').toLowerCase().endsWith('.md'))
+        .map((f) => WrTranscriptFile(
+              id: f.id!,
+              name: f.name ?? '(unnamed).md',
+              modifiedTime: f.modifiedTime,
+              sizeBytes: int.tryParse(f.size ?? ''),
+            ))
+        .toList();
+  }
+
+  /// Lists markdown transcript files under
+  /// `<configured Drive folder>/transcripts/`.
+  ///
+  /// The app's local settings can disappear when a debug build is reinstalled,
+  /// while the PC-side transcription pipeline keeps writing to
+  /// `recordings/transcripts`. To keep the transcript screen useful after that
+  /// kind of reinstall, search the configured folder first, then common
+  /// recording folders, then any Drive folder named `transcripts`.
+  Future<List<WrTranscriptFile>> listTranscripts() async {
+    final api = await _buildApi();
+
+    final parentIds = <String>{};
+    final configuredId = _cachedFolderId ?? await _configuredFolderId();
+    if (configuredId != null) parentIds.add(configuredId);
+
+    final configuredName = await folderName();
+    final parentNames = <String>{configuredName, _kFolderName};
+    for (final name in parentNames) {
+      parentIds.addAll(await _findFolderIdsByName(api, name));
+    }
+
+    final transcriptFolderIds = <String>{};
+    for (final parentId in parentIds) {
+      final id =
+          await _findChildFolder(api, parentId: parentId, name: 'transcripts');
+      if (id != null) transcriptFolderIds.add(id);
+    }
+
+    if (transcriptFolderIds.isEmpty) {
+      transcriptFolderIds
+          .addAll(await _findFolderIdsByName(api, 'transcripts'));
+    }
+
+    final byId = <String, WrTranscriptFile>{};
+    for (final folderId in transcriptFolderIds) {
+      for (final f in await _listTranscriptMarkdownFiles(api, folderId)) {
+        byId[f.id] = f;
+      }
+    }
+
+    final files = byId.values.toList();
+    files.sort((a, b) {
+      final at = a.modifiedTime;
+      final bt = b.modifiedTime;
+      if (at == null && bt == null) return a.name.compareTo(b.name);
+      if (at == null) return 1;
+      if (bt == null) return -1;
+      return bt.compareTo(at);
+    });
+    return files;
+  }
+
+  /// Downloads a markdown transcript file as UTF-8 text.
+  Future<String> downloadTranscriptMarkdown(String fileId) async {
+    final api = await _buildApi();
+    final media = await api.files.get(
+      fileId,
+      downloadOptions: drive.DownloadOptions.fullMedia,
+    ) as drive.Media;
+    final bytes = <int>[];
+    await for (final chunk in media.stream) {
+      bytes.addAll(chunk);
+    }
+    return utf8.decode(bytes, allowMalformed: true);
   }
 
   /// Uploads [localFile] to the "wearable-recordings/" Drive folder.

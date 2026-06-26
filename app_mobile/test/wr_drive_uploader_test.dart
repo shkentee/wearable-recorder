@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:googleapis/drive/v3.dart' as drive;
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:mocktail/mocktail.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:wearable_recorder/services/wr_drive_uploader.dart';
 
 // ---------------------------------------------------------------------------
@@ -31,8 +32,7 @@ class _FakeMedia extends Fake implements drive.Media {}
 /// Creates a temporary file pre-filled with [content] bytes.
 Future<File> _tempOpusFile([String content = 'fake opus data']) async {
   final dir = Directory.systemTemp.createTempSync('wr_uploader_test_');
-  return File('${dir.path}/session.opus')
-    ..writeAsBytesSync(content.codeUnits);
+  return File('${dir.path}/session.opus')..writeAsBytesSync(content.codeUnits);
 }
 
 // ---------------------------------------------------------------------------
@@ -50,6 +50,8 @@ void main() {
   late _MockGoogleSignIn mockSignIn;
 
   setUp(() {
+    SharedPreferences.setMockInitialValues({});
+
     mockApi = _MockDriveApi();
     mockFiles = _MockFilesResource();
     mockSignIn = _MockGoogleSignIn();
@@ -67,8 +69,7 @@ void main() {
     // calls (which omit uploadMedia). We use a single stub that dispatches on
     // uploadMedia presence to avoid the two-stub ambiguity.
     // ------------------------------------------------------------------
-    test(
-        'creates folder when none exists and uploads with correct MIME type',
+    test('creates folder when none exists and uploads with correct MIME type',
         () async {
       // list() returns empty — no folder found.
       when(() => mockFiles.list(
@@ -359,6 +360,88 @@ void main() {
       await uploader.deleteFile('target-file-id');
 
       verify(() => mockFiles.delete('target-file-id')).called(1);
+    });
+  });
+
+  group('WrDriveUploader.listTranscripts', () {
+    test('falls back to recordings/transcripts when app folder setting is gone',
+        () async {
+      final queries = <String>[];
+      when(() => mockFiles.list(
+            q: any(named: 'q'),
+            spaces: any(named: 'spaces'),
+            $fields: any(named: r'$fields'),
+            orderBy: any(named: 'orderBy'),
+            pageSize: any(named: 'pageSize'),
+          )).thenAnswer((inv) async {
+        final q = inv.namedArguments[#q] as String? ?? '';
+        queries.add(q);
+        if (q.contains("'transcripts-folder' in parents")) {
+          return drive.FileList()
+            ..files = [
+              drive.File()
+                ..id = 'md-1'
+                ..name = '2026-06-06.md'
+                ..modifiedTime = DateTime.utc(2026, 6, 6, 7, 19)
+                ..size = '137963',
+            ];
+        }
+        return drive.FileList()..files = [];
+      });
+
+      when(() => mockFiles.list(
+            q: any(named: 'q'),
+            spaces: any(named: 'spaces'),
+            $fields: any(named: r'$fields'),
+            pageSize: any(named: 'pageSize'),
+          )).thenAnswer((inv) async {
+        final q = inv.namedArguments[#q] as String? ?? '';
+        queries.add(q);
+
+        if (q.contains("name='wearable-recordings'")) {
+          return drive.FileList()..files = [];
+        }
+        if (q.contains("name='recordings'")) {
+          return drive.FileList()
+            ..files = [
+              drive.File()
+                ..id = 'recordings-folder'
+                ..name = 'recordings',
+            ];
+        }
+        if (q.contains("'recordings-folder' in parents") &&
+            q.contains("name='transcripts'")) {
+          return drive.FileList()
+            ..files = [
+              drive.File()
+                ..id = 'transcripts-folder'
+                ..name = 'transcripts',
+            ];
+        }
+        if (q.contains("'transcripts-folder' in parents")) {
+          return drive.FileList()
+            ..files = [
+              drive.File()
+                ..id = 'md-1'
+                ..name = '2026-06-06.md'
+                ..modifiedTime = DateTime.utc(2026, 6, 6, 7, 19)
+                ..size = '137963',
+            ];
+        }
+        if (q.contains("name='transcripts'")) {
+          return drive.FileList()..files = [];
+        }
+        return drive.FileList()..files = [];
+      });
+
+      final uploader = WrDriveUploader.withApi(mockApi);
+      final files = await uploader.listTranscripts();
+
+      printOnFailure(queries.join('\n'));
+      expect(files, hasLength(1));
+      expect(files.single.id, 'md-1');
+      expect(files.single.name, '2026-06-06.md');
+      expect(files.single.sizeBytes, 137963);
     });
   });
 }

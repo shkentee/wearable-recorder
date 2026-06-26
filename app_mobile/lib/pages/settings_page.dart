@@ -3,10 +3,10 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../main.dart' show themeModeNotifier, setThemeMode, themeModeLabelJa;
 import '../services/wr_drive_uploader.dart';
+import '../services/wr_sd_sync.dart' show kDriveUploadAutoKey, kWifiOnlyKey;
 import '../services/wr_sync_schedule.dart';
 
 /// SharedPreferences keys (kept in sync with device_page.dart / uploader).
-const _kAutoUpload = 'wr_auto_upload';
 const _kFolderKey = 'wr_drive_folder';
 const _kFolderIdKey = 'wr_drive_folder_id';
 const _kDefaultFolder = 'wearable-recordings';
@@ -29,7 +29,8 @@ class _SettingsPageState extends State<SettingsPage> {
 
   String _folderName = _kDefaultFolder;
   String? _email;
-  bool _autoUpload = true;
+  bool _driveUploadAuto = true;
+  bool _wifiOnly = false;
   bool _loadingEmail = true;
   bool _busy = false;
   SyncSchedule _schedule = const SyncSchedule();
@@ -44,7 +45,8 @@ class _SettingsPageState extends State<SettingsPage> {
     final prefs = await SharedPreferences.getInstance();
     if (mounted) {
       setState(() {
-        _autoUpload = prefs.getBool(_kAutoUpload) ?? true;
+        _driveUploadAuto = prefs.getBool(kDriveUploadAutoKey) ?? true;
+        _wifiOnly = prefs.getBool(kWifiOnlyKey) ?? false;
         _folderName = prefs.getString(_kFolderKey) ?? _kDefaultFolder;
       });
     }
@@ -101,10 +103,16 @@ class _SettingsPageState extends State<SettingsPage> {
     _snack('アップロード先を「${picked.name}」に設定しました');
   }
 
-  Future<void> _setAutoUpload(bool v) async {
+  Future<void> _setDriveUploadAuto(bool v) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(_kAutoUpload, v);
-    if (mounted) setState(() => _autoUpload = v);
+    await prefs.setBool(kDriveUploadAutoKey, v);
+    if (mounted) setState(() => _driveUploadAuto = v);
+  }
+
+  Future<void> _setWifiOnly(bool v) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(kWifiOnlyKey, v);
+    if (mounted) setState(() => _wifiOnly = v);
   }
 
   Future<void> _saveSchedule(SyncSchedule s) async {
@@ -215,10 +223,20 @@ class _SettingsPageState extends State<SettingsPage> {
             const Divider(),
             SwitchListTile(
               secondary: const Icon(Icons.cloud_upload_outlined),
-              title: const Text('Driveへ自動アップロード'),
-              subtitle: const Text('録音が終わるたびに自動でアップロード'),
-              value: _autoUpload,
-              onChanged: _busy ? null : _setAutoUpload,
+              title: const Text('Drive自動同期'),
+              subtitle: Text(_driveUploadAuto
+                  ? '自動：未アップロード分を自動でDriveへ送る'
+                  : '手動：メイン画面のボタンでDriveへ送る'),
+              value: _driveUploadAuto,
+              onChanged: _busy ? null : _setDriveUploadAuto,
+            ),
+            const Divider(),
+            SwitchListTile(
+              secondary: const Icon(Icons.wifi),
+              title: const Text('WiFiのみアップロード'),
+              subtitle: const Text('モバイルデータではアップロードしない'),
+              value: _wifiOnly,
+              onChanged: _busy ? null : _setWifiOnly,
             ),
             const Divider(),
             // ---- 自動吸出し（タイマー） ----
@@ -237,6 +255,7 @@ class _SettingsPageState extends State<SettingsPage> {
                 secondary: Icon(switch (m) {
                   SyncMode.scheduledTime => Icons.schedule,
                   SyncMode.intervalWindow => Icons.timelapse,
+                  SyncMode.manual => Icons.touch_app,
                   _ => Icons.sync,
                 }),
                 title: Text(syncModeLabelJa(m)),
@@ -258,8 +277,8 @@ class _SettingsPageState extends State<SettingsPage> {
                   value: _schedule.intervalMin,
                   underline: const SizedBox.shrink(),
                   items: const [5, 10, 15, 30, 60]
-                      .map((n) =>
-                          DropdownMenuItem(value: n, child: Text('$n分')))
+                      .map(
+                          (n) => DropdownMenuItem(value: n, child: Text('$n分')))
                       .toList(),
                   onChanged: (v) {
                     if (v != null) {
@@ -273,8 +292,10 @@ class _SettingsPageState extends State<SettingsPage> {
                 title: const Text('開始時刻'),
                 trailing: Text(SyncSchedule.fmtHm(_schedule.windowStartMin),
                     style: Theme.of(context).textTheme.titleMedium),
-                onTap: () => _pickTime(_schedule.windowStartMin,
-                    (m) => _saveSchedule(_schedule.copyWith(windowStartMin: m))),
+                onTap: () => _pickTime(
+                    _schedule.windowStartMin,
+                    (m) =>
+                        _saveSchedule(_schedule.copyWith(windowStartMin: m))),
               ),
               ListTile(
                 leading: const Icon(Icons.nightlight_outlined),

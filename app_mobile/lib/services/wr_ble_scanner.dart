@@ -5,13 +5,11 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'wr_uuids.dart';
 
 /// Thin wrapper around FlutterBluePlus that scans for wearable-recorder
-/// devices and filters results by device name on the Dart side.
+/// devices and filters results by device name and service UUID.
 ///
-/// Android's OS-level withServices filter only matches UUIDs in the main
-/// advertisement packet, not the scan response. Since omi firmware places
-/// the audio service UUID in the scan response, OS-level filtering misses
-/// the device on Android. We scan without a UUID filter and drop results
-/// that don't look like omi devices instead.
+/// Xiaomi/Android can suppress unfiltered BLE advertisements before they
+/// reach Dart. Supplying the omi/wearable-recorder service UUIDs keeps the
+/// native scan broad enough for our firmware while avoiding OS-side drops.
 class WrBleScanner {
   static const Duration defaultTimeout = Duration(seconds: 12);
 
@@ -36,20 +34,38 @@ class WrBleScanner {
           // advertisement still gets matched.
           final candidates = <String>[
             r.device.platformName,
+            r.device.advName,
             r.advertisementData.advName,
           ];
-          return candidates.any(
+          final namesMatch = candidates.any(
             (n) =>
                 n == WrUuids.defaultDeviceName ||
                 n.startsWith('Omi') ||
                 n.startsWith('Friend'),
           );
+          if (namesMatch) return true;
+
+          final services = r.advertisementData.serviceUuids
+              .map((u) => u.str.toLowerCase());
+          return services.contains(WrUuids.audioService) ||
+              services.contains(WrUuids.storageService) ||
+              services.contains(WrUuids.settingsService) ||
+              services.contains(WrUuids.dfuService);
         }).toList();
         _resultsController.add(filtered);
       },
       onError: (e) => _resultsController.addError(e),
     );
-    await FlutterBluePlus.startScan(timeout: timeout);
+    await FlutterBluePlus.startScan(
+      timeout: timeout,
+      withServices: [
+        Guid(WrUuids.audioService),
+        Guid(WrUuids.storageService),
+        Guid(WrUuids.settingsService),
+        Guid(WrUuids.dfuService),
+      ],
+      androidUsesFineLocation: true,
+    );
   }
 
   Future<void> stop() async {

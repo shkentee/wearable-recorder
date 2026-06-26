@@ -12,9 +12,6 @@ import 'device_page.dart';
 /// SharedPreferences key used to persist / retrieve the last-connected device.
 const _kLastDeviceId = 'wr_last_device_id';
 
-/// How long auto-connect waits before giving up and showing the normal list.
-const _kAutoConnectTimeout = Duration(seconds: 30);
-
 class ScanPage extends StatefulWidget {
   /// [scannerFactory] is an optional dependency-injection seam used by
   /// widget tests to swap in a fake [WrBleScanner]. Production callers
@@ -34,13 +31,8 @@ class _ScanPageState extends State<ScanPage> {
   List<ScanResult> _results = const [];
   String? _error;
 
-  /// Non-null while waiting to auto-connect: the device id we are looking for.
-  String? _autoConnectId;
-
   /// Display name used in the "Auto-connecting to …" indicator.
   String? _autoConnectName;
-
-  Timer? _autoConnectTimer;
 
   @override
   void initState() {
@@ -48,7 +40,6 @@ class _ScanPageState extends State<ScanPage> {
     _sub = _scanner.results.listen(
       (rs) {
         setState(() => _results = rs);
-        _tryAutoConnect(rs);
       },
       onError: (e) => setState(() => _error = e.toString()),
     );
@@ -57,7 +48,6 @@ class _ScanPageState extends State<ScanPage> {
 
   @override
   void dispose() {
-    _autoConnectTimer?.cancel();
     _sub?.cancel();
     _scanner.dispose();
     super.dispose();
@@ -73,64 +63,33 @@ class _ScanPageState extends State<ScanPage> {
     if (savedId == null || savedId.isEmpty) return;
 
     setState(() {
-      _autoConnectId = savedId;
       _autoConnectName = savedId; // will be updated once we see the advert name
     });
 
     final ok = await _ensurePermissions();
     if (!ok) {
       setState(() {
-        _autoConnectId = null;
         _autoConnectName = null;
         _error = 'Bluetooth/location permission denied';
       });
       return;
     }
 
-    try {
-      await _scanner.start();
-    } catch (e) {
-      setState(() {
-        _autoConnectId = null;
-        _autoConnectName = null;
-        _error = 'scan failed: $e';
-      });
-      return;
-    }
-
-    // Give up after [_kAutoConnectTimeout] and fall back to normal scan UI.
-    _autoConnectTimer = Timer(_kAutoConnectTimeout, () {
-      if (!mounted) return;
-      setState(() {
-        _autoConnectId = null;
-        _autoConnectName = null;
-      });
+    // On some Android/Windows combinations the device is connectable by its
+    // known remoteId even when it does not appear in fresh scan results.
+    // Prefer that path for the previously connected recorder, then leave the
+    // normal scan button as the manual fallback if the device page reports an
+    // error.
+    final device = BluetoothDevice.fromId(savedId);
+    setState(() {
+      _autoConnectName = null;
     });
-  }
-
-  void _tryAutoConnect(List<ScanResult> results) {
-    final targetId = _autoConnectId;
-    if (targetId == null) return;
-
-    for (final r in results) {
-      if (r.device.remoteId.str == targetId) {
-        // Update the display name from the advertisement.
-        final advName = r.device.platformName.isEmpty
-            ? targetId
-            : r.device.platformName;
-        setState(() => _autoConnectName = advName);
-
-        // Cancel the timeout — we found the device; navigate now.
-        _autoConnectTimer?.cancel();
-        _autoConnectTimer = null;
-
-        // Clear auto-connect state before navigating to avoid a second trigger
-        // if the stream fires again while the push is in flight.
-        _autoConnectId = null;
-        _openResult(r);
-        return;
-      }
-    }
+    if (!mounted) return;
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => DevicePage(device: WrBleDevice(device)),
+      ),
+    );
   }
 
   // ---------------------------------------------------------------------------
@@ -160,7 +119,9 @@ class _ScanPageState extends State<ScanPage> {
     return perms.values.every((s) => s.isGranted || s.isLimited);
   }
 
-  void _openResult(ScanResult r) {
+  Future<void> _openResult(ScanResult r) async {
+    await _scanner.stop();
+    if (!mounted) return;
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => DevicePage(device: WrBleDevice(r.device)),
@@ -224,7 +185,8 @@ class _ScanPageState extends State<ScanPage> {
                           : r.device.platformName;
                       return ListTile(
                         title: Text(name),
-                        subtitle: Text('${r.device.remoteId.str}  rssi ${r.rssi}'),
+                        subtitle:
+                            Text('${r.device.remoteId.str}  rssi ${r.rssi}'),
                         trailing: const Icon(Icons.chevron_right),
                         onTap: () => _openResult(r),
                       );

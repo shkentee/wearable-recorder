@@ -2,22 +2,23 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 /// How the app decides WHEN to pull (drain) the device's recordings to Drive.
 ///
-///  * [continuous]      — keep up in near-real-time while connected (default).
+///  * [continuous]      — keep up in near-real-time while connected.
 ///  * [scheduledTime]   — once per day at a set time (e.g. 23:00).
 ///  * [intervalWindow]  — every N minutes, only within a daily time window
 ///                        (e.g. every 30 min between 09:00 and 18:00).
-enum SyncMode { continuous, scheduledTime, intervalWindow }
+enum SyncMode { continuous, scheduledTime, intervalWindow, manual }
 
 String syncModeLabelJa(SyncMode m) => switch (m) {
       SyncMode.scheduledTime => '毎日この時刻',
       SyncMode.intervalWindow => '時間帯 × 間隔',
+      SyncMode.manual => '手動',
       _ => '常時同期',
     };
 
 /// User-configured auto-pull schedule, persisted in SharedPreferences.
 class SyncSchedule {
   const SyncSchedule({
-    this.mode = SyncMode.continuous,
+    this.mode = SyncMode.manual,
     this.timeMinutes = 23 * 60, // 23:00
     this.intervalMin = 30,
     this.windowStartMin = 9 * 60, // 09:00
@@ -53,7 +54,8 @@ class SyncSchedule {
 
   static Future<SyncSchedule> load() async {
     final p = await SharedPreferences.getInstance();
-    final mi = (p.getInt(_kMode) ?? 0).clamp(0, SyncMode.values.length - 1);
+    final mi = (p.getInt(_kMode) ?? SyncMode.manual.index)
+        .clamp(0, SyncMode.values.length - 1);
     return SyncSchedule(
       mode: SyncMode.values[mi],
       timeMinutes: p.getInt(_kTime) ?? 23 * 60,
@@ -83,6 +85,7 @@ class SyncSchedule {
         SyncMode.scheduledTime => '毎日 ${fmtHm(timeMinutes)} に自動吸出し',
         SyncMode.intervalWindow =>
           '${fmtHm(windowStartMin)}〜${fmtHm(windowEndMin)} に $intervalMin分おきで吸出し',
+        SyncMode.manual => '手動（ボタンで吸出し）',
         _ => '常時（接続中はリアルタイムで吸出し）',
       };
 
@@ -109,6 +112,8 @@ class SyncSchedule {
         if (!inWindow) return false;
         if (lastIntervalRun == null) return true;
         return now.difference(lastIntervalRun).inMinutes >= intervalMin;
+      case SyncMode.manual:
+        return false; // _loop() handles manual separately via _manualTrigger
     }
   }
 }
