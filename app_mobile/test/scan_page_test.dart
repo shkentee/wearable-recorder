@@ -60,8 +60,27 @@ void main() {
 
   testWidgets('initial state shows the empty-state hint', (tester) async {
     await tester.pumpWidget(hostedScanPage());
-    expect(find.text('Tap search to scan'), findsOneWidget);
+    expect(find.text('検索して録音機を探す'), findsOneWidget);
     expect(find.byType(ListTile), findsNothing);
+  });
+
+  testWidgets('active scan shows a searching empty-state hint', (tester) async {
+    when(() => scanner.isScanning).thenReturn(true);
+
+    await tester.pumpWidget(hostedScanPage());
+
+    expect(find.text('録音機を検索中…'), findsOneWidget);
+    expect(find.byIcon(Icons.stop), findsOneWidget);
+  });
+
+  testWidgets('tapping stop while scanning stops the scanner', (tester) async {
+    when(() => scanner.isScanning).thenReturn(true);
+
+    await tester.pumpWidget(hostedScanPage());
+    await tester.tap(find.byIcon(Icons.stop));
+    await tester.pump();
+
+    verify(() => scanner.stop()).called(1);
   });
 
   testWidgets('renders one ListTile per ScanResult emitted on the stream',
@@ -88,7 +107,7 @@ void main() {
     expect(find.textContaining('rssi -78'), findsOneWidget);
 
     // Empty-state hint is gone once results arrive.
-    expect(find.text('Tap search to scan'), findsNothing);
+    expect(find.text('検索して録音機を探す'), findsNothing);
   });
 
   testWidgets('renders a red error banner when the scan stream errors',

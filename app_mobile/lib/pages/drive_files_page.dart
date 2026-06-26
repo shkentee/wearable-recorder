@@ -57,7 +57,7 @@ class _DriveFilesPageState extends State<DriveFilesPage> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Delete failed: $e'),
+          content: Text('削除に失敗しました: $e'),
           backgroundColor: Colors.red.shade700,
         ),
       );
@@ -68,12 +68,12 @@ class _DriveFilesPageState extends State<DriveFilesPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Drive Recordings'),
+        title: const Text('Drive録音'),
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh),
             onPressed: _loadFiles,
-            tooltip: 'Refresh',
+            tooltip: '更新',
           ),
         ],
       ),
@@ -86,10 +86,10 @@ class _DriveFilesPageState extends State<DriveFilesPage> {
       return const Center(child: CircularProgressIndicator());
     }
     if (_error != null) {
-      return Center(child: Text('Error: $_error'));
+      return Center(child: Text('読み込みに失敗しました: $_error'));
     }
     if (_files.isEmpty) {
-      return const Center(child: Text('No recordings uploaded yet.'));
+      return const Center(child: Text('Driveに録音はまだありません'));
     }
     return RefreshIndicator(
       onRefresh: _loadFiles,
@@ -99,14 +99,14 @@ class _DriveFilesPageState extends State<DriveFilesPage> {
           final file = _files[i];
           return ListTile(
             leading: const Icon(Icons.audiotrack),
-            title: Text(file.name ?? '(unnamed)'),
+            title: Text(file.name ?? '名称なし'),
             subtitle: file.modifiedTime != null
                 ? Text(file.modifiedTime!.toLocal().toString())
                 : null,
             trailing: IconButton(
               icon: const Icon(Icons.delete_outline),
               onPressed: () => _delete(file),
-              tooltip: 'Delete',
+              tooltip: '削除',
             ),
           );
         },

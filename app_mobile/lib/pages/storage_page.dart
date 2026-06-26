@@ -47,12 +47,12 @@ class _StoragePageState extends State<StoragePage> {
 
   Future<void> _init() async {
     try {
-      _session = widget._sessionOverride ??
-          await widget.device.openStorageSession();
+      _session =
+          widget._sessionOverride ?? await widget.device.openStorageSession();
       if (_session == null) {
         if (!mounted) return;
         setState(() {
-          _error = 'Storage service not found on this firmware.';
+          _error = 'このファームウェアでは本体SD一覧に未対応です。';
           _loading = false;
         });
         return;
@@ -92,7 +92,7 @@ class _StoragePageState extends State<StoragePage> {
   Future<void> _fetchAndUpload(String filename) async {
     if (_progress.containsKey(filename)) return; // already in progress
 
-    setState(() => _progress[filename] = 'Fetching…');
+    setState(() => _progress[filename] = '吸出し中…');
     try {
       // Fetch file from device.
       final bytes = await _session!.fetchFile(
@@ -100,12 +100,12 @@ class _StoragePageState extends State<StoragePage> {
         onProgress: (n) {
           if (!mounted) return;
           setState(() => _progress[filename] =
-              'Fetching… ${(n / 1024).toStringAsFixed(0)} KB');
+              '吸出し中… ${(n / 1024).toStringAsFixed(0)} KB');
         },
       );
 
       if (!mounted) return;
-      setState(() => _progress[filename] = 'Uploading…');
+      setState(() => _progress[filename] = 'アップロード中…');
 
       // Save to a temp file and upload to Drive.
       final dir = await getTemporaryDirectory();
@@ -119,11 +119,11 @@ class _StoragePageState extends State<StoragePage> {
       setState(() => _progress.remove(filename));
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('$filename uploaded to Drive')),
+        SnackBar(content: Text('$filename をDriveへアップロードしました')),
       );
     } catch (e) {
       if (!mounted) return;
-      setState(() => _progress[filename] = 'Error: $e');
+      setState(() => _progress[filename] = 'エラー: $e');
     }
   }
 
@@ -137,11 +137,11 @@ class _StoragePageState extends State<StoragePage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Device SD Files'),
+        title: const Text('本体SD'),
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh),
-            tooltip: 'Refresh',
+            tooltip: '更新',
             onPressed: _loading ? null : _refresh,
           ),
         ],
@@ -158,12 +158,12 @@ class _StoragePageState extends State<StoragePage> {
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(24),
-          child: Text('Error: $_error'),
+          child: Text('読み込みに失敗しました: $_error'),
         ),
       );
     }
     if (_files.isEmpty) {
-      return const Center(child: Text('No .opus files on device SD card.'));
+      return const Center(child: Text('本体SDに .opus ファイルはありません'));
     }
     return RefreshIndicator(
       onRefresh: _refresh,
@@ -179,14 +179,13 @@ class _StoragePageState extends State<StoragePage> {
             trailing: prog == null
                 ? IconButton(
                     icon: const Icon(Icons.cloud_upload_outlined),
-                    tooltip: 'Fetch from device → Upload to Drive',
+                    tooltip: '吸出してDriveへ送る',
                     onPressed: () => _fetchAndUpload(name),
                   )
-                : prog.startsWith('Error:')
+                : prog.startsWith('エラー:')
                     ? IconButton(
-                        icon: const Icon(Icons.refresh,
-                            color: Colors.red),
-                        tooltip: 'Retry',
+                        icon: const Icon(Icons.refresh, color: Colors.red),
+                        tooltip: '再試行',
                         onPressed: () {
                           setState(() => _progress.remove(name));
                           _fetchAndUpload(name);

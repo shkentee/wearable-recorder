@@ -186,7 +186,7 @@ void main() {
     await tester.pumpAndSettle();
 
     // Tap the SD-card action in the AppBar.
-    await tester.tap(find.byTooltip('Device SD files'));
+    await tester.tap(find.byTooltip('本体SD'));
     await tester.pumpAndSettle();
 
     // StoragePage should now be visible.
@@ -203,7 +203,7 @@ void main() {
     await tester.pumpAndSettle();
 
     // Tap the cloud-queue action in the AppBar.
-    await tester.tap(find.byTooltip('Drive recordings'));
+    await tester.tap(find.byTooltip('Drive録音'));
     await tester.pumpAndSettle();
 
     // DriveFilesPage should now be visible.

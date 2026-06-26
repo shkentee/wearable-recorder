@@ -17,7 +17,7 @@ import 'transcripts_page.dart';
 /// SharedPreferences key used to persist the last-connected device address.
 const _kLastDeviceId = 'wr_last_device_id';
 const _micGainLabels = [
-  'Mute',
+  'ミュート',
   '-20dB',
   '-10dB',
   '0dB',
@@ -319,31 +319,29 @@ class _DevicePageState extends State<DevicePage> {
     final ok = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
-        title: const Text('Sleep device?'),
+        title: const Text('スリープしますか？'),
         content: const Text(
-            'The device powers down to save battery. Press its button to '
-            'wake it (it restarts and resumes recording).'),
+          '録音機の電源を切って節電します。再開するには本体ボタンを押してください。'
+          '起動後、録音を再開します。',
+        ),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(context, false),
-              child: const Text('Cancel')),
+              child: const Text('キャンセル')),
           TextButton(
               onPressed: () => Navigator.pop(context, true),
-              child: const Text('Sleep')),
+              child: const Text('スリープ')),
         ],
       ),
     );
     if (ok != true) return;
     try {
       final sent = await widget.device.sleepDevice();
-      _showSnackBar(
-          sent
-              ? 'Sleep command sent — device powering down'
-              : 'Sleep not supported by this firmware',
+      _showSnackBar(sent ? 'スリープ指示を送信しました' : 'このファームウェアはスリープに未対応です',
           isError: !sent);
     } catch (_) {
-      // The link drops as the device powers off — expected.
-      _showSnackBar('Sleep command sent — device powering down');
+      // The link drops as the device powers off.
+      _showSnackBar('スリープ指示を送信しました');
     }
   }
 
@@ -407,7 +405,7 @@ class _DevicePageState extends State<DevicePage> {
             ),
           IconButton(
             icon: const Icon(Icons.sd_storage_outlined),
-            tooltip: 'Device SD files',
+            tooltip: '本体SD',
             onPressed: () => Navigator.push(
               context,
               MaterialPageRoute(
@@ -420,7 +418,7 @@ class _DevicePageState extends State<DevicePage> {
           ),
           IconButton(
             icon: const Icon(Icons.library_music_outlined),
-            tooltip: 'Recordings (play)',
+            tooltip: '録音を再生',
             onPressed: () => Navigator.push(
               context,
               MaterialPageRoute(
@@ -430,7 +428,7 @@ class _DevicePageState extends State<DevicePage> {
           ),
           IconButton(
             icon: const Icon(Icons.cloud_queue),
-            tooltip: 'Drive recordings',
+            tooltip: 'Drive録音',
             onPressed: () => Navigator.push(
               context,
               MaterialPageRoute(
@@ -440,7 +438,7 @@ class _DevicePageState extends State<DevicePage> {
           ),
           IconButton(
             icon: const Icon(Icons.description_outlined),
-            tooltip: 'Transcripts',
+            tooltip: 'トランスクリプト',
             onPressed: () => Navigator.push(
               context,
               MaterialPageRoute(
@@ -451,12 +449,12 @@ class _DevicePageState extends State<DevicePage> {
           if (_recording != null)
             IconButton(
               icon: const Icon(Icons.bedtime_outlined),
-              tooltip: 'Sleep device',
+              tooltip: '録音機をスリープ',
               onPressed: _sleepDevice,
             ),
           IconButton(
             icon: const Icon(Icons.settings_outlined),
-            tooltip: 'Settings',
+            tooltip: '設定',
             onPressed: () async {
               await Navigator.push(
                 context,

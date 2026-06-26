@@ -40,7 +40,7 @@ void main() {
     await tester.pumpWidget(hostedPage());
     await tester.pumpAndSettle();
 
-    expect(find.text('No recordings uploaded yet.'), findsOneWidget);
+    expect(find.text('Driveに録音はまだありません'), findsOneWidget);
     expect(find.byType(ListView), findsNothing);
   });
 
@@ -85,7 +85,7 @@ void main() {
     await tester.pumpWidget(hostedPage());
     await tester.pumpAndSettle();
 
-    expect(find.textContaining('Error:'), findsOneWidget);
+    expect(find.textContaining('読み込みに失敗しました:'), findsOneWidget);
     expect(find.textContaining('network error'), findsOneWidget);
   });
 }

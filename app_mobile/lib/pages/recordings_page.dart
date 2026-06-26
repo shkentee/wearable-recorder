@@ -86,9 +86,8 @@ class _RecordingsPageState extends State<RecordingsPage> {
   bool _isUploaded(WrRecording rec) =>
       _uploadedIds.contains('${rec.name}:${rec.sizeBytes}');
 
-  String _remoteName(File f) => f.uri.pathSegments.last
-      .replaceAll(':', '-')
-      .replaceAll('.bin', '.opus');
+  String _remoteName(File f) =>
+      f.uri.pathSegments.last.replaceAll(':', '-').replaceAll('.bin', '.opus');
 
   Future<void> _togglePlay(WrRecording rec) async {
     // Tapping the currently-loaded item toggles pause/resume.
@@ -130,24 +129,20 @@ class _RecordingsPageState extends State<RecordingsPage> {
         _playingPath = null;
         _isPlaying = false;
       });
-      _snack('Playback failed: $e', error: true);
+      _snack('再生に失敗しました: $e', error: true);
     }
   }
 
   Future<void> _upload(WrRecording rec) async {
     setState(() => _uploading.add(rec.file.path));
     try {
-      final id =
-          await _uploader.uploadIfNew(rec.file, _remoteName(rec.file));
+      final id = await _uploader.uploadIfNew(rec.file, _remoteName(rec.file));
       if (mounted) {
-        setState(
-            () => _uploadedIds.add('${rec.name}:${rec.sizeBytes}'));
+        setState(() => _uploadedIds.add('${rec.name}:${rec.sizeBytes}'));
       }
-      _snack(id == null
-          ? 'Already uploaded.'
-          : 'Uploaded to Drive (id: $id)');
+      _snack(id == null ? 'アップロード済みです' : 'Driveへアップロードしました');
     } catch (e) {
-      _snack('Upload failed: $e', error: true);
+      _snack('アップロードに失敗しました: $e', error: true);
     } finally {
       if (mounted) setState(() => _uploading.remove(rec.file.path));
     }
@@ -156,7 +151,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
   Future<void> _uploadAll() async {
     final pending = _recs.where((r) => !_isUploaded(r)).toList();
     if (pending.isEmpty) {
-      _snack('Everything is already uploaded.');
+      _snack('すべてアップロード済みです');
       return;
     }
     setState(() => _uploadingAll = true);
@@ -170,9 +165,9 @@ class _RecordingsPageState extends State<RecordingsPage> {
           if (mounted) setState(() => _uploadedIds.add('$name:$len'));
         },
       );
-      _snack('Uploaded $n recording(s) to Drive.');
+      _snack('$n件をDriveへアップロードしました');
     } catch (e) {
-      _snack('Upload all failed: $e', error: true);
+      _snack('一括アップロードに失敗しました: $e', error: true);
     } finally {
       if (mounted) setState(() => _uploadingAll = false);
     }
@@ -189,15 +184,15 @@ class _RecordingsPageState extends State<RecordingsPage> {
     final ok = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
-        title: const Text('Delete recording?'),
+        title: const Text('録音を削除しますか？'),
         content: Text(rec.name),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(context, false),
-              child: const Text('Cancel')),
+              child: const Text('キャンセル')),
           TextButton(
               onPressed: () => Navigator.pop(context, true),
-              child: const Text('Delete')),
+              child: const Text('削除')),
         ],
       ),
     );
@@ -244,7 +239,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Recordings'),
+        title: const Text('録音'),
         actions: [
           IconButton(
             icon: _uploadingAll
@@ -253,12 +248,12 @@ class _RecordingsPageState extends State<RecordingsPage> {
                     height: 20,
                     child: CircularProgressIndicator(strokeWidth: 2))
                 : const Icon(Icons.cloud_upload),
-            tooltip: 'Upload all to Drive',
+            tooltip: 'すべてDriveへ送る',
             onPressed: (_loading || _uploadingAll) ? null : _uploadAll,
           ),
           IconButton(
             icon: const Icon(Icons.refresh),
-            tooltip: 'Refresh',
+            tooltip: '更新',
             onPressed: _loading ? null : _load,
           ),
         ],
@@ -266,16 +261,15 @@ class _RecordingsPageState extends State<RecordingsPage> {
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : _recs.isEmpty
-              ? const Center(child: Text('No local recordings yet.'))
+              ? const Center(child: Text('保存済み録音はまだありません'))
               : ListView.separated(
                   itemCount: _recs.length,
                   separatorBuilder: (_, __) => const Divider(height: 1),
                   itemBuilder: (context, i) => _tile(_recs[i]),
                 ),
-      bottomNavigationBar:
-          (_playingPath != null && _decodeProgress == null)
-              ? _nowPlayingBar()
-              : null,
+      bottomNavigationBar: (_playingPath != null && _decodeProgress == null)
+          ? _nowPlayingBar()
+          : null,
     );
   }
 
@@ -339,11 +333,11 @@ class _RecordingsPageState extends State<RecordingsPage> {
 
     final accent = theme.colorScheme.primary;
     final status = decoding
-        ? 'decoding ${(100 * (_decodeProgress ?? 0)).round()}%…'
+        ? '変換中 ${(100 * (_decodeProgress ?? 0)).round()}%…'
         : playing
-            ? '▶ playing'
+            ? '▶ 再生中'
             : paused
-                ? '⏸ paused'
+                ? '⏸ 一時停止'
                 : null;
 
     return ListTile(
@@ -364,7 +358,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
                 color: isCurrent ? accent : null,
               ),
         iconSize: 34,
-        tooltip: playing ? 'Pause' : 'Play',
+        tooltip: playing ? '一時停止' : '再生',
         onPressed: decoding ? null : () => _togglePlay(rec),
       ),
       title: Text(
@@ -395,14 +389,12 @@ class _RecordingsPageState extends State<RecordingsPage> {
                         : Icons.cloud_upload_outlined,
                     color: _isUploaded(rec) ? Colors.green : null,
                   ),
-                  tooltip: _isUploaded(rec)
-                      ? 'Uploaded · tap to re-upload'
-                      : 'Upload to Drive',
+                  tooltip: _isUploaded(rec) ? 'アップロード済み・再送信' : 'Driveへ送る',
                   onPressed: () => _upload(rec),
                 ),
           IconButton(
             icon: const Icon(Icons.delete_outline),
-            tooltip: 'Delete',
+            tooltip: '削除',
             onPressed: () => _delete(rec),
           ),
         ],

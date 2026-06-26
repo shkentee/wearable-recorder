@@ -70,7 +70,7 @@ class _ScanPageState extends State<ScanPage> {
     if (!ok) {
       setState(() {
         _autoConnectName = null;
-        _error = 'Bluetooth/location permission denied';
+        _error = 'Bluetooth/位置情報の権限が必要です';
       });
       return;
     }
@@ -96,18 +96,26 @@ class _ScanPageState extends State<ScanPage> {
   // Manual scan + navigation
   // ---------------------------------------------------------------------------
 
-  Future<void> _scan() async {
+  Future<void> _toggleScan() async {
+    if (_scanner.isScanning) {
+      await _scanner.stop();
+      if (mounted) setState(() {});
+      return;
+    }
+
     setState(() => _error = null);
     final ok = await _ensurePermissions();
     if (!ok) {
-      setState(() => _error = 'Bluetooth/location permission denied');
+      setState(() => _error = 'Bluetooth/位置情報の権限が必要です');
       return;
     }
     try {
       await _scanner.start();
     } catch (e) {
-      setState(() => _error = 'scan failed: $e');
+      setState(() => _error = '検索に失敗しました: $e');
+      return;
     }
+    if (mounted) setState(() {});
   }
 
   Future<bool> _ensurePermissions() async {
@@ -132,14 +140,15 @@ class _ScanPageState extends State<ScanPage> {
   @override
   Widget build(BuildContext context) {
     final autoName = _autoConnectName;
+    final isScanning = _scanner.isScanning;
     return Scaffold(
       appBar: AppBar(
         title: const Text('wearable-recorder'),
         actions: [
           IconButton(
-            icon: Icon(_scanner.isScanning ? Icons.stop : Icons.search),
-            onPressed: _scan,
-            tooltip: 'Scan',
+            icon: Icon(isScanning ? Icons.stop : Icons.search),
+            onPressed: _toggleScan,
+            tooltip: isScanning ? '検索を停止' : '録音機を検索',
           ),
         ],
       ),
@@ -174,7 +183,11 @@ class _ScanPageState extends State<ScanPage> {
             ),
           Expanded(
             child: _results.isEmpty
-                ? const Center(child: Text('Tap search to scan'))
+                ? Center(
+                    child: Text(
+                      isScanning ? '録音機を検索中…' : '検索して録音機を探す',
+                    ),
+                  )
                 : ListView.separated(
                     itemCount: _results.length,
                     separatorBuilder: (_, __) => const Divider(height: 1),

@@ -211,7 +211,7 @@ class _SettingsPageState extends State<SettingsPage> {
             const Divider(),
             ListTile(
               leading: const Icon(Icons.folder_outlined),
-              title: const Text('アップロード先フォルダ'),
+              title: const Text('保存先フォルダ'),
               subtitle: Text(_folderName),
               trailing: TextButton.icon(
                 onPressed: _busy ? null : _pickFolder,
@@ -471,19 +471,19 @@ class _FolderPickerPageState extends State<_FolderPickerPage> {
     final name = await showDialog<String>(
       context: context,
       builder: (_) => AlertDialog(
-        title: Text('New folder in "${_current.name}"'),
+        title: Text('「${_current.name}」に新しいフォルダ'),
         content: TextField(
           controller: controller,
           autofocus: true,
-          decoration: const InputDecoration(hintText: 'Folder name'),
+          decoration: const InputDecoration(hintText: 'フォルダ名'),
         ),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(context),
-              child: const Text('Cancel')),
+              child: const Text('キャンセル')),
           TextButton(
               onPressed: () => Navigator.pop(context, controller.text.trim()),
-              child: const Text('Create')),
+              child: const Text('作成')),
         ],
       ),
     );
@@ -498,7 +498,7 @@ class _FolderPickerPageState extends State<_FolderPickerPage> {
       if (!mounted) return;
       setState(() => _busy = false);
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('Create failed: $e'),
+        content: Text('作成に失敗しました: $e'),
         backgroundColor: Colors.red.shade700,
       ));
     }
@@ -517,7 +517,7 @@ class _FolderPickerPageState extends State<_FolderPickerPage> {
           actions: [
             IconButton(
               icon: const Icon(Icons.create_new_folder_outlined),
-              tooltip: 'New folder here',
+              tooltip: 'ここに新規フォルダ',
               onPressed: _busy ? null : _createFolder,
             ),
           ],
@@ -538,7 +538,7 @@ class _FolderPickerPageState extends State<_FolderPickerPage> {
                   child: FilledButton.icon(
                     onPressed: _busy ? null : _selectCurrent,
                     icon: const Icon(Icons.check),
-                    label: Text('Save here: "${_current.name}"'),
+                    label: Text('ここを保存先にする: 「${_current.name}」'),
                   ),
                 ),
               ),
@@ -555,7 +555,7 @@ class _FolderPickerPageState extends State<_FolderPickerPage> {
         onSubmitted: _search,
         decoration: InputDecoration(
           isDense: true,
-          hintText: 'Search all folders (incl. Computers / PC)',
+          hintText: '全フォルダを検索（PC同期先を含む）',
           prefixIcon: const Icon(Icons.search),
           suffixIcon: _searching
               ? IconButton(
@@ -575,7 +575,7 @@ class _FolderPickerPageState extends State<_FolderPickerPage> {
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(24),
-          child: Text('Error: $_error'),
+          child: Text('読み込みに失敗しました: $_error'),
         ),
       );
     }
@@ -583,7 +583,7 @@ class _FolderPickerPageState extends State<_FolderPickerPage> {
       return const Center(
         child: Padding(
           padding: EdgeInsets.all(24),
-          child: Text('No matching folders.'),
+          child: Text('一致するフォルダはありません'),
         ),
       );
     }
@@ -595,7 +595,7 @@ class _FolderPickerPageState extends State<_FolderPickerPage> {
         return ListTile(
           leading: const Icon(Icons.folder_special_outlined),
           title: Text(f.name),
-          subtitle: Text(path == null ? 'resolving location…' : '📁 $path',
+          subtitle: Text(path == null ? '場所を確認中…' : '場所: $path',
               maxLines: 2, overflow: TextOverflow.ellipsis),
           isThreeLine: false,
           onTap: () => Navigator.pop(context, (id: f.id, name: f.name)),
@@ -640,7 +640,7 @@ class _FolderPickerPageState extends State<_FolderPickerPage> {
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(24),
-          child: Text('Error: $_error'),
+          child: Text('読み込みに失敗しました: $_error'),
         ),
       );
     }
@@ -649,8 +649,7 @@ class _FolderPickerPageState extends State<_FolderPickerPage> {
         child: Padding(
           padding: EdgeInsets.all(24),
           child: Text(
-            'No subfolders here.\nUse "Save here" to pick this folder, '
-            'or + to create a new one.',
+            'サブフォルダはありません。\nこの場所を選ぶか、+ で新規作成できます。',
             textAlign: TextAlign.center,
           ),
         ),
