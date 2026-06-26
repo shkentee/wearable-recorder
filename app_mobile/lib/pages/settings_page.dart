@@ -124,6 +124,9 @@ class _SettingsPageState extends State<SettingsPage> {
     final picked = await showTimePicker(
       context: context,
       initialTime: TimeOfDay(hour: currentMin ~/ 60, minute: currentMin % 60),
+      helpText: '時刻を選択',
+      cancelText: 'キャンセル',
+      confirmText: 'OK',
     );
     if (picked != null) onPicked(picked.hour * 60 + picked.minute);
   }

@@ -202,8 +202,10 @@ void main() {
     connectCompleter.complete();
     await tester.pumpAndSettle();
 
-    // Tap the cloud-queue action in the AppBar.
-    await tester.tap(find.byTooltip('Drive録音'));
+    // Open the overflow menu, then tap the Drive recordings action.
+    await tester.tap(find.byTooltip('その他'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Drive録音'));
     await tester.pumpAndSettle();
 
     // DriveFilesPage should now be visible.

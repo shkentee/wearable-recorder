@@ -28,6 +28,13 @@ const _micGainLabels = [
   '+40dB',
 ];
 
+enum _DeviceMenuAction {
+  recordings,
+  drive,
+  transcripts,
+  sleep,
+}
+
 class DevicePage extends StatefulWidget {
   const DevicePage({
     super.key,
@@ -355,6 +362,71 @@ class _DevicePageState extends State<DevicePage> {
     );
   }
 
+  void _openStoragePage() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => StoragePage(
+          device: widget.device,
+          uploader: _uploader,
+        ),
+      ),
+    );
+  }
+
+  void _openRecordingsPage() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => RecordingsPage(uploader: _uploader),
+      ),
+    );
+  }
+
+  void _openDriveFilesPage() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => DriveFilesPage(uploader: _uploader),
+      ),
+    );
+  }
+
+  void _openTranscriptsPage() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => TranscriptsPage(uploader: _uploader),
+      ),
+    );
+  }
+
+  Future<void> _openSettingsPage() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => SettingsPage(uploader: _uploader),
+      ),
+    );
+    if (mounted) {
+      await _loadSyncSettings();
+      _startSdSync();
+    }
+  }
+
+  void _handleMenuAction(_DeviceMenuAction action) {
+    switch (action) {
+      case _DeviceMenuAction.recordings:
+        _openRecordingsPage();
+      case _DeviceMenuAction.drive:
+        _openDriveFilesPage();
+      case _DeviceMenuAction.transcripts:
+        _openTranscriptsPage();
+      case _DeviceMenuAction.sleep:
+        _sleepDevice();
+    }
+  }
+
   @override
   void dispose() {
     _sdSync?.dispose();
@@ -406,67 +478,52 @@ class _DevicePageState extends State<DevicePage> {
           IconButton(
             icon: const Icon(Icons.sd_storage_outlined),
             tooltip: '本体SD',
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) => StoragePage(
-                  device: widget.device,
-                  uploader: _uploader,
-                ),
-              ),
-            ),
+            onPressed: _openStoragePage,
           ),
-          IconButton(
-            icon: const Icon(Icons.library_music_outlined),
-            tooltip: '録音を再生',
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) => RecordingsPage(uploader: _uploader),
-              ),
-            ),
-          ),
-          IconButton(
-            icon: const Icon(Icons.cloud_queue),
-            tooltip: 'Drive録音',
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) => DriveFilesPage(uploader: _uploader),
-              ),
-            ),
-          ),
-          IconButton(
-            icon: const Icon(Icons.description_outlined),
-            tooltip: 'トランスクリプト',
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) => TranscriptsPage(uploader: _uploader),
-              ),
-            ),
-          ),
-          if (_recording != null)
-            IconButton(
-              icon: const Icon(Icons.bedtime_outlined),
-              tooltip: '録音機をスリープ',
-              onPressed: _sleepDevice,
-            ),
           IconButton(
             icon: const Icon(Icons.settings_outlined),
             tooltip: '設定',
-            onPressed: () async {
-              await Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => SettingsPage(uploader: _uploader),
+            onPressed: _openSettingsPage,
+          ),
+          PopupMenuButton<_DeviceMenuAction>(
+            tooltip: 'その他',
+            icon: const Icon(Icons.more_vert),
+            onSelected: _handleMenuAction,
+            itemBuilder: (context) => [
+              const PopupMenuItem(
+                value: _DeviceMenuAction.recordings,
+                child: ListTile(
+                  leading: Icon(Icons.library_music_outlined),
+                  title: Text('録音を再生'),
+                  contentPadding: EdgeInsets.zero,
                 ),
-              );
-              if (mounted) {
-                await _loadSyncSettings();
-                _startSdSync();
-              }
-            },
+              ),
+              const PopupMenuItem(
+                value: _DeviceMenuAction.drive,
+                child: ListTile(
+                  leading: Icon(Icons.cloud_queue),
+                  title: Text('Drive録音'),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+              const PopupMenuItem(
+                value: _DeviceMenuAction.transcripts,
+                child: ListTile(
+                  leading: Icon(Icons.description_outlined),
+                  title: Text('トランスクリプト'),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+              if (_recording != null)
+                const PopupMenuItem(
+                  value: _DeviceMenuAction.sleep,
+                  child: ListTile(
+                    leading: Icon(Icons.bedtime_outlined),
+                    title: Text('スリープ'),
+                    contentPadding: EdgeInsets.zero,
+                  ),
+                ),
+            ],
           ),
         ],
       ),
