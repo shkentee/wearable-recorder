@@ -159,7 +159,7 @@ class WrSdSync {
   String? _name;
   int _offset = 0; // bytes fetched from the device file
   int _chunkIndex = 0; // next chunk number
-  int? _sessionStartEpoch; // parsed from <epoch>.opus_sd, else null
+  int? _chunkBaseEpoch; // parsed from <epoch>.opus_sd, else stable fallback
   BytesBuilder _pending = BytesBuilder(copy: false);
 
   final _events = StreamController<String>.broadcast();
@@ -234,17 +234,53 @@ class WrSdSync {
     return m == null ? null : int.tryParse(m.group(1)!);
   }
 
+  String _chunkBaseKey(String name) => 'wr_sync_base_$name';
+
   Future<void> _loadState(String name) async {
     final prefs = await SharedPreferences.getInstance();
     _name = name;
     _offset = prefs.getInt('wr_sync_off_$name') ?? 0;
     _chunkIndex = prefs.getInt('wr_sync_ci_$name') ?? 0;
-    _sessionStartEpoch = _epochFromName(name);
+    final parsedEpoch = _epochFromName(name);
+    if (parsedEpoch != null) {
+      _chunkBaseEpoch = parsedEpoch;
+    } else {
+      var base = prefs.getInt(_chunkBaseKey(name));
+      if (base == null) {
+        base = DateTime.now().millisecondsSinceEpoch ~/ 1000 -
+            _chunkIndex * chunkSeconds;
+        await prefs.setInt(_chunkBaseKey(name), base);
+      }
+      _chunkBaseEpoch = base;
+    }
     final pf = await _pendingFile(name);
     _pending = BytesBuilder(copy: false);
     if (await pf.exists()) {
       _pending.add(await pf.readAsBytes());
     }
+  }
+
+  Future<void> _resetStateForReusedName(String name) async {
+    final prefs = await SharedPreferences.getInstance();
+    _offset = 0;
+    _chunkIndex = 0;
+    _pending = BytesBuilder(copy: false);
+    await prefs.setInt('wr_sync_off_$name', _offset);
+    await prefs.setInt('wr_sync_ci_$name', _chunkIndex);
+
+    final parsedEpoch = _epochFromName(name);
+    if (parsedEpoch != null) {
+      _chunkBaseEpoch = parsedEpoch;
+    } else {
+      final base = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+      await prefs.setInt(_chunkBaseKey(name), base);
+      _chunkBaseEpoch = base;
+    }
+
+    try {
+      final pf = await _pendingFile(name);
+      if (await pf.exists()) await pf.delete();
+    } catch (_) {}
   }
 
   /// Cheap checkpoint of just the cursor ints — safe to call every window so a
@@ -285,13 +321,9 @@ class WrSdSync {
   }
 
   String _chunkName(int index) {
-    final base = _sessionStartEpoch;
-    if (base != null) {
-      return '${base + index * chunkSeconds}.opus_sd';
-    }
-    // rec_NNNN (pre time-sync): approximate start from the phone clock.
-    final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-    return '${now - chunkSeconds}.opus_sd';
+    final base =
+        _chunkBaseEpoch ?? DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    return '${base + index * chunkSeconds}.opus_sd';
   }
 
   Future<void> _emitChunk(Uint8List bytes) async {
@@ -599,9 +631,7 @@ class WrSdSync {
 
     if (_offset > committed) {
       // Device file shrank (reboot/new file reusing a name): restart it.
-      _offset = 0;
-      _chunkIndex = 0;
-      _pending = BytesBuilder(copy: false);
+      await _resetStateForReusedName(name);
     }
 
     if (_offset >= committed) {

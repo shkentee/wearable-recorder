@@ -11,6 +11,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// (`<basename>:<finalSize>`), used to make auto-upload idempotent.
 const _kUploadedKey = 'wr_uploaded_ids';
 const _kMaxUploadedIds = 2000;
+const _kDriveMetadataTimeout = Duration(seconds: 30);
+const _kMinUploadTimeout = Duration(minutes: 2);
+const _kUploadFloorBytesPerSecond = 16 * 1024;
 
 /// MIME type used when uploading Opus-in-OGG dump files to Drive.
 const _kOpusMime = 'audio/ogg; codecs=opus';
@@ -38,6 +41,15 @@ const _kDriveScope = drive.DriveApi.driveFileScope;
 /// Read scope is needed for transcript markdown files created by the PC-side
 /// transcription pipeline, not necessarily by this mobile app.
 const _kDriveReadScope = drive.DriveApi.driveReadonlyScope;
+
+Duration _uploadTimeoutForBytes(int bytes) {
+  final transferSeconds =
+      (bytes + _kUploadFloorBytesPerSecond - 1) ~/ _kUploadFloorBytesPerSecond +
+          30;
+  final minSeconds = _kMinUploadTimeout.inSeconds;
+  return Duration(
+      seconds: transferSeconds < minSeconds ? minSeconds : transferSeconds);
+}
 
 class WrTranscriptFile {
   const WrTranscriptFile({
@@ -250,11 +262,13 @@ class WrDriveUploader {
     // Search for an existing folder with the expected name owned by the user.
     final query =
         "mimeType='application/vnd.google-apps.folder' and name='$name' and trashed=false";
-    final result = await api.files.list(
-      q: query,
-      spaces: 'drive',
-      $fields: 'files(id,name)',
-    );
+    final result = await api.files
+        .list(
+          q: query,
+          spaces: 'drive',
+          $fields: 'files(id,name)',
+        )
+        .timeout(_kDriveMetadataTimeout);
 
     final files = result.files;
     if (files != null && files.isNotEmpty) {
@@ -266,7 +280,8 @@ class WrDriveUploader {
     final folder = drive.File()
       ..name = name
       ..mimeType = 'application/vnd.google-apps.folder';
-    final created = await api.files.create(folder);
+    final created =
+        await api.files.create(folder).timeout(_kDriveMetadataTimeout);
     _cachedFolderId = created.id!;
     return _cachedFolderId!;
   }
@@ -451,9 +466,14 @@ class WrDriveUploader {
   ///
   /// Throws [StateError] if the user cancels sign-in, or re-throws any
   /// Drive API error.
-  Future<String> uploadFile(File localFile, String remoteFileName) async {
+  Future<String> uploadFile(
+    File localFile,
+    String remoteFileName, {
+    Duration? timeout,
+  }) async {
     final api = await _buildApi();
     final folderId = await _ensureFolder(api);
+    final length = await localFile.length();
 
     final meta = drive.File()
       ..name = remoteFileName
@@ -461,14 +481,16 @@ class WrDriveUploader {
 
     final media = drive.Media(
       localFile.openRead(),
-      await localFile.length(),
+      length,
       contentType: _kOpusMime,
     );
 
-    final created = await api.files.create(
-      meta,
-      uploadMedia: media,
-    );
+    final created = await api.files
+        .create(
+          meta,
+          uploadMedia: media,
+        )
+        .timeout(timeout ?? _uploadTimeoutForBytes(length));
 
     final id = created.id;
     if (id == null) {
@@ -486,30 +508,39 @@ class WrDriveUploader {
   /// its content if it does. Used by the omi-style sync: one growing file per
   /// recording session, updated in place (keeps the Drive file count low).
   /// Returns the Drive file id.
-  Future<String> uploadOrUpdate(File localFile, String remoteFileName) async {
+  Future<String> uploadOrUpdate(
+    File localFile,
+    String remoteFileName, {
+    Duration? timeout,
+  }) async {
     final api = await _buildApi();
     final folderId = await _ensureFolder(api);
+    final length = await localFile.length();
 
     String? fileId = _fileIdByName[remoteFileName];
     if (fileId == null) {
       final escaped = remoteFileName.replaceAll("'", r"\'");
-      final res = await api.files.list(
-        q: "'$folderId' in parents and name='$escaped' and trashed=false",
-        spaces: 'drive',
-        $fields: 'files(id)',
-      );
+      final res = await api.files
+          .list(
+            q: "'$folderId' in parents and name='$escaped' and trashed=false",
+            spaces: 'drive',
+            $fields: 'files(id)',
+          )
+          .timeout(_kDriveMetadataTimeout);
       final found = res.files;
       if (found != null && found.isNotEmpty) fileId = found.first.id;
     }
 
     final media = drive.Media(
       localFile.openRead(),
-      await localFile.length(),
+      length,
       contentType: _kOpusMime,
     );
 
     if (fileId != null) {
-      await api.files.update(drive.File(), fileId, uploadMedia: media);
+      await api.files
+          .update(drive.File(), fileId, uploadMedia: media)
+          .timeout(timeout ?? _uploadTimeoutForBytes(length));
       _fileIdByName[remoteFileName] = fileId;
       return fileId;
     }
@@ -517,7 +548,9 @@ class WrDriveUploader {
     final meta = drive.File()
       ..name = remoteFileName
       ..parents = [folderId];
-    final created = await api.files.create(meta, uploadMedia: media);
+    final created = await api.files
+        .create(meta, uploadMedia: media)
+        .timeout(timeout ?? _uploadTimeoutForBytes(length));
     final id = created.id;
     if (id == null) {
       throw StateError('Drive API returned a file with no ID.');

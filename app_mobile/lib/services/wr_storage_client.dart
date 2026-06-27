@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
@@ -227,6 +228,61 @@ class WrStorageSession {
       }
       return result;
     });
+  }
+
+  /// Fetches [filename] in bounded windows and streams it to [destination].
+  ///
+  /// This is the safe path for long recordings: memory usage is bounded by
+  /// [windowSize] instead of the full SD file size.
+  Future<int> fetchFileToFile(
+    String filename,
+    File destination, {
+    int windowSize = 64 * 1024,
+    Duration idleTimeout = const Duration(seconds: 15),
+    void Function(int bytes, int? totalBytes)? onProgress,
+  }) async {
+    if (windowSize <= 0) {
+      throw ArgumentError.value(windowSize, 'windowSize', 'must be positive');
+    }
+
+    await destination.parent.create(recursive: true);
+    final sink = destination.openWrite(mode: FileMode.write);
+    var offset = 0;
+    int? committedSize;
+
+    try {
+      while (true) {
+        final result = await fetchWindow(
+          filename,
+          offset,
+          windowSize,
+          idleTimeout: idleTimeout,
+        );
+        if (result.committedSize > 0) {
+          committedSize = result.committedSize;
+        }
+
+        final bytes = result.bytes;
+        if (bytes.isEmpty) {
+          committedSize ??= offset == 0 ? result.committedSize : null;
+          onProgress?.call(offset, committedSize);
+          break;
+        }
+
+        sink.add(bytes);
+        offset += bytes.length;
+        await sink.flush();
+        onProgress?.call(offset, committedSize);
+
+        final total = committedSize;
+        if (total != null && offset >= total) break;
+        if (total == null && bytes.length < windowSize) break;
+      }
+    } finally {
+      await sink.close();
+    }
+
+    return offset;
   }
 
   /// Queries the current (growing) recording file and its committed size.

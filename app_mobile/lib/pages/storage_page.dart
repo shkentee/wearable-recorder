@@ -97,24 +97,26 @@ class _StoragePageState extends State<StoragePage> {
 
     if (!mounted) return;
     setState(() => _progress[filename] = '吸出し中…');
+    File? tmp;
     try {
-      // Fetch file from device.
-      final bytes = await _session!.fetchFile(
+      final dir = await getTemporaryDirectory();
+      tmp = File('${dir.path}/$filename');
+
+      await _session!.fetchFileToFile(
         filename,
-        onProgress: (n) {
+        tmp,
+        onProgress: (n, total) {
           if (!mounted) return;
-          setState(() => _progress[filename] =
-              '吸出し中… ${(n / 1024).toStringAsFixed(0)} KB');
+          final doneKb = (n / 1024).toStringAsFixed(0);
+          final totalKb = total == null || total <= 0
+              ? ''
+              : ' / ${(total / 1024).toStringAsFixed(0)}';
+          setState(() => _progress[filename] = '吸出し中… $doneKb$totalKb KB');
         },
       );
 
       if (!mounted) return;
       setState(() => _progress[filename] = 'アップロード中…');
-
-      // Save to a temp file and upload to Drive.
-      final dir = await getTemporaryDirectory();
-      final tmp = File('${dir.path}/$filename');
-      await tmp.writeAsBytes(bytes);
 
       await _uploader.uploadFile(tmp, filename);
       await tmp.delete();
@@ -126,6 +128,9 @@ class _StoragePageState extends State<StoragePage> {
         SnackBar(content: Text('$filename をDriveへアップロードしました')),
       );
     } catch (e) {
+      try {
+        if (tmp != null && await tmp.exists()) await tmp.delete();
+      } catch (_) {}
       if (!mounted) return;
       setState(() => _progress[filename] = 'エラー: $e');
     }
