@@ -113,14 +113,33 @@ BT_GATT_SERVICE_DEFINE(storage_svc,
 );
 /* storage_svc.attrs[2] = storageStream value (used with bt_gatt_notify). */
 
+static void storage_notify_done(struct bt_conn *conn, void *user_data)
+{
+	ARG_UNUSED(conn);
+
+	struct k_sem *done = user_data;
+	k_sem_give(done);
+}
+
 static int storage_notify_with_retry(struct bt_conn *conn,
 				     const void *data, uint16_t len)
 {
 	int err = 0;
+	struct k_sem done;
+	struct bt_gatt_notify_params params = {
+		.attr = &storage_svc.attrs[2],
+		.data = data,
+		.len = len,
+		.func = storage_notify_done,
+		.user_data = &done,
+	};
 
 	for (int attempt = 0; attempt < WR_STORAGE_NOTIFY_RETRIES; attempt++) {
-		err = bt_gatt_notify(conn, &storage_svc.attrs[2], data, len);
+		k_sem_init(&done, 0, 1);
+
+		err = bt_gatt_notify_cb(conn, &params);
 		if (err == 0) {
+			k_sem_take(&done, K_FOREVER);
 			return 0;
 		}
 
