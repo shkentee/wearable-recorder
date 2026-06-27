@@ -111,6 +111,8 @@ class WrSdSync {
   // ~1-2 min at BLE speed instead of one starving the other for many minutes.
   static const int _maxBytesPerPass = 1 * 1024 * 1024;
   static const int _frameMs = 10; // one [len][frame] record = 10 ms of audio
+  static const Duration _closedFileRetryBaseDelay = Duration(seconds: 30);
+  static const Duration _closedFileRetryMaxDelay = Duration(minutes: 15);
 
   int get _framesPerChunk => chunkSeconds * 1000 ~/ _frameMs;
 
@@ -142,10 +144,11 @@ class WrSdSync {
   bool _timedDrainActive = false;
   bool _manualDrainActive = false;
 
-  // Closed files that errored mid-fetch (e.g. SD bad sector -> fs_read -5).
-  // Skipped for the rest of this session so one unreadable file can't block the
-  // whole backlog; cleared on restart so a transient error gets retried.
-  final Set<String> _failedFiles = {};
+  // Closed files that errored mid-fetch (e.g. transient BLE / SD read error).
+  // They are skipped only until their retry time so one bad read does not block
+  // the backlog, but transient failures are retried automatically in-session.
+  final Map<String, DateTime> _closedFileRetryAfter = {};
+  final Map<String, int> _closedFileFailures = {};
 
   /// Latest committed size the device reported for the current file.
   int lastCommitted = 0;
@@ -170,6 +173,18 @@ class WrSdSync {
 
   final _uploadStatus = StreamController<WrUploadStatus>.broadcast();
   Stream<WrUploadStatus> get uploadStatus => _uploadStatus.stream;
+
+  /// Exposed for tests: exponential backoff for retryable closed-file reads.
+  static Duration closedFileRetryDelayForAttempt(int failures) {
+    final attempt = failures < 1 ? 1 : failures;
+    final shift = (attempt - 1).clamp(0, 8);
+    final seconds = _closedFileRetryBaseDelay.inSeconds * (1 << shift);
+    return Duration(
+      seconds: seconds > _closedFileRetryMaxDelay.inSeconds
+          ? _closedFileRetryMaxDelay.inSeconds
+          : seconds,
+    );
+  }
 
   /// Manually trigger a fetch run (used by the main-screen pull button, and
   /// effective in manual mode). Harmless in the other modes.
@@ -692,17 +707,32 @@ class WrSdSync {
     }
     final prefs = await SharedPreferences.getInstance();
     var totalPulled = 0;
+    final now = DateTime.now();
     for (final name in files) {
       if (!_running) break;
       if (!name.endsWith('.opus_sd')) continue;
       if (name.startsWith('battlog')) continue; // measurement instrument files
-      if (_failedFiles.contains(name)) continue; // unreadable this session
       if (prefs.getBool('wr_sync_done_$name') ?? false) continue;
+      final retryAt = _closedFileRetryAfter[name];
+      if (retryAt != null && retryAt.isAfter(now)) continue;
       final pulled = await _drainClosedFile(name);
       totalPulled += pulled;
       if (pulled > 0) break;
     }
     return totalPulled;
+  }
+
+  void _clearClosedFileRetry(String name) {
+    _closedFileRetryAfter.remove(name);
+    _closedFileFailures.remove(name);
+  }
+
+  Duration _markClosedFileRetry(String name) {
+    final failures = (_closedFileFailures[name] ?? 0) + 1;
+    _closedFileFailures[name] = failures;
+    final delay = closedFileRetryDelayForAttempt(failures);
+    _closedFileRetryAfter[name] = DateTime.now().add(delay);
+    return delay;
   }
 
   /// Drain one pass (<= [_maxBytesPerPass]) of a closed file, chunking +
@@ -755,17 +785,22 @@ class WrSdSync {
         }
       }
     } catch (e) {
-      // This file won't read past _offset (e.g. SD bad sector -> fs_read -5).
-      // Skip it for the session so it can't block the rest of the backlog;
-      // keep the bytes already pulled. Don't rethrow (avoid a tight retry loop).
-      _failedFiles.add(name);
+      // Keep already-pulled bytes, then retry this file after a bounded backoff.
+      // This avoids both permanent in-session skips and tight BLE retry loops.
+      final retryDelay = _markClosedFileRetry(name);
       await _persistOffset();
       await _persistPending();
       if (!_events.isClosed) {
-        _events.add('skip $name @$_offset (read error): $e');
+        _events.add(
+          'retry $name @$_offset after ${retryDelay.inSeconds}s (read error): $e',
+        );
       }
       _emitProgress();
       return pulled;
+    }
+
+    if (pulled > 0) {
+      _clearClosedFileRetry(name);
     }
 
     // Fully fetched -> flush the final tail and mark done so it's skipped next.
@@ -775,6 +810,7 @@ class WrSdSync {
       await _persistPending();
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool('wr_sync_done_$name', true);
+      _clearClosedFileRetry(name);
     }
     _emitProgress();
     return pulled;

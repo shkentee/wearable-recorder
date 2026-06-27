@@ -398,6 +398,47 @@ void main() {
       expect(results.where((id) => id == null), hasLength(1));
       expect(uploadCount, 1);
     });
+
+    test('does not mark a failed upload as uploaded so the next call retries',
+        () async {
+      final existingFolder = drive.File()..id = 'folder-id';
+      when(() => mockFiles.list(
+            q: any(named: 'q'),
+            spaces: any(named: 'spaces'),
+            $fields: any(named: r'$fields'),
+          )).thenAnswer(
+        (_) async => drive.FileList()..files = [existingFolder],
+      );
+
+      var uploadAttempts = 0;
+      when(() => mockFiles.create(
+            any(),
+            uploadMedia: any(named: 'uploadMedia'),
+          )).thenAnswer((inv) async {
+        final uploadMedia = inv.namedArguments[#uploadMedia];
+        if (uploadMedia == null) return drive.File()..id = 'folder-id';
+        uploadAttempts++;
+        if (uploadAttempts == 1) {
+          throw const SocketException('offline');
+        }
+        return drive.File()..id = 'uploaded-after-retry';
+      });
+
+      final dumpFile = await _tempOpusFile('retry content');
+      final uploader = WrDriveUploader.withApi(mockApi);
+
+      await expectLater(
+        () => uploader.uploadIfNew(dumpFile, 'session.opus'),
+        throwsA(isA<SocketException>()),
+      );
+      expect(await uploader.isUploaded(dumpFile), false);
+
+      final id = await uploader.uploadIfNew(dumpFile, 'session.opus');
+
+      expect(id, 'uploaded-after-retry');
+      expect(uploadAttempts, 2);
+      expect(await uploader.isUploaded(dumpFile), true);
+    });
   });
 
   group('WrDriveUploader.listTranscripts', () {
