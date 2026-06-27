@@ -232,6 +232,19 @@ class WrDriveUploader {
     return names.reversed.join(' › ');
   }
 
+  /// Builds a human-readable full display path for a concrete folder ID.
+  Future<String> folderDisplayPath(String folderId) async {
+    if (folderId == 'root') return 'My Drive';
+    final api = await _buildApi();
+    final meta = await api.files.get(
+      folderId,
+      $fields: 'id,name,parents',
+    ) as drive.File;
+    final name = meta.name ?? folderId;
+    final parentPath = await folderPath(meta.parents);
+    return parentPath.isEmpty ? name : '$parentPath › $name';
+  }
+
   /// Creates a new Drive folder (optionally under [parentId]) and returns it
   /// (id + name populated).
   Future<drive.File> createFolder(String name, {String? parentId}) async {

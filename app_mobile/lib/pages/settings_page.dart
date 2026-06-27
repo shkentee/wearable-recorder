@@ -9,7 +9,10 @@ import '../services/wr_sync_schedule.dart';
 /// SharedPreferences keys (kept in sync with device_page.dart / uploader).
 const _kFolderKey = 'wr_drive_folder';
 const _kFolderIdKey = 'wr_drive_folder_id';
-const _kDefaultFolder = 'wearable-recordings';
+const _kFolderDisplayKey = 'wr_drive_folder_display';
+const _kDefaultFolderName = 'recordings';
+const _kDefaultFolderDisplay = 'coai › recordings';
+const _kLegacyDefaultFolder = 'wearable-recordings';
 
 /// App settings: which Google Drive account + folder recordings upload to,
 /// and whether uploads happen automatically on disconnect.
@@ -27,7 +30,7 @@ class _SettingsPageState extends State<SettingsPage> {
   WrDriveUploader get _uploader =>
       widget._uploaderOverride ?? WrDriveUploader();
 
-  String _folderName = _kDefaultFolder;
+  String _folderDisplay = _kDefaultFolderDisplay;
   String? _email;
   bool _driveUploadAuto = true;
   bool _wifiOnly = false;
@@ -44,12 +47,16 @@ class _SettingsPageState extends State<SettingsPage> {
   Future<void> _load() async {
     final prefs = await SharedPreferences.getInstance();
     if (mounted) {
+      final storedName = prefs.getString(_kFolderKey)?.trim();
+      final storedDisplay = prefs.getString(_kFolderDisplayKey)?.trim();
       setState(() {
         _driveUploadAuto = prefs.getBool(kDriveUploadAutoKey) ?? true;
         _wifiOnly = prefs.getBool(kWifiOnlyKey) ?? false;
-        _folderName = prefs.getString(_kFolderKey) ?? _kDefaultFolder;
+        _folderDisplay = _displayFromPrefs(
+            storedName: storedName, storedDisplay: storedDisplay);
       });
     }
+    await _refreshFolderDisplayFromId(prefs);
     final sched = await SyncSchedule.load();
     if (mounted) setState(() => _schedule = sched);
     try {
@@ -59,6 +66,57 @@ class _SettingsPageState extends State<SettingsPage> {
       // ignore — offline / not signed in
     } finally {
       if (mounted) setState(() => _loadingEmail = false);
+    }
+  }
+
+  String _displayFromPrefs({String? storedName, String? storedDisplay}) {
+    if (storedDisplay != null &&
+        storedDisplay.isNotEmpty &&
+        storedDisplay != _kLegacyDefaultFolder) {
+      return _stripMyDrivePrefix(storedDisplay);
+    }
+    if (storedName != null &&
+        storedName.isNotEmpty &&
+        storedName != _kLegacyDefaultFolder) {
+      return storedName;
+    }
+    return _kDefaultFolderDisplay;
+  }
+
+  String _stripMyDrivePrefix(String path) {
+    const prefix = 'My Drive › ';
+    return path.startsWith(prefix) ? path.substring(prefix.length) : path;
+  }
+
+  String _displayFromStack(List<({String id, String name})> stack) {
+    final names = stack
+        .where((f) => f.id != 'root' && f.name != 'My Drive')
+        .map((f) => f.name)
+        .toList();
+    return names.isEmpty ? 'My Drive' : names.join(' › ');
+  }
+
+  Future<void> _refreshFolderDisplayFromId(SharedPreferences prefs) async {
+    final folderId = prefs.getString(_kFolderIdKey)?.trim();
+    if (folderId == null || folderId.isEmpty) {
+      final name = prefs.getString(_kFolderKey)?.trim();
+      if (name == null || name.isEmpty || name == _kLegacyDefaultFolder) {
+        await prefs.setString(_kFolderKey, _kDefaultFolderName);
+        await prefs.setString(_kFolderDisplayKey, _kDefaultFolderDisplay);
+        if (mounted) setState(() => _folderDisplay = _kDefaultFolderDisplay);
+      }
+      return;
+    }
+
+    try {
+      final display = _stripMyDrivePrefix(
+        await _uploader.folderDisplayPath(folderId),
+      );
+      if (display.isEmpty) return;
+      await prefs.setString(_kFolderDisplayKey, display);
+      if (mounted) setState(() => _folderDisplay = display);
+    } catch (_) {
+      // Offline / auth unavailable: keep the best local label from prefs.
     }
   }
 
@@ -89,18 +147,24 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Future<void> _pickFolder() async {
-    final picked = await Navigator.push<({String id, String name})>(
+    final picked =
+        await Navigator.push<({String id, String name, String displayName})>(
       context,
       MaterialPageRoute(
-        builder: (_) => _FolderPickerPage(uploader: _uploader),
+        builder: (_) => _FolderPickerPage(
+          uploader: _uploader,
+          displayFromStack: _displayFromStack,
+          stripMyDrivePrefix: _stripMyDrivePrefix,
+        ),
       ),
     );
     if (picked == null) return;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_kFolderIdKey, picked.id);
     await prefs.setString(_kFolderKey, picked.name);
-    if (mounted) setState(() => _folderName = picked.name);
-    _snack('アップロード先を「${picked.name}」に設定しました');
+    await prefs.setString(_kFolderDisplayKey, picked.displayName);
+    if (mounted) setState(() => _folderDisplay = picked.displayName);
+    _snack('アップロード先を「${picked.displayName}」に設定しました');
   }
 
   Future<void> _setDriveUploadAuto(bool v) async {
@@ -215,7 +279,7 @@ class _SettingsPageState extends State<SettingsPage> {
             ListTile(
               leading: const Icon(Icons.folder_outlined),
               title: const Text('保存先フォルダ'),
-              subtitle: Text(_folderName),
+              subtitle: Text(_folderDisplay),
               trailing: TextButton.icon(
                 onPressed: _busy ? null : _pickFolder,
                 icon: const Icon(Icons.drive_folder_upload_outlined),
@@ -333,9 +397,16 @@ class _SettingsPageState extends State<SettingsPage> {
 /// up, and "Save here" to choose the current folder. Pops with the chosen
 /// `(id, name)` record, or null if cancelled.
 class _FolderPickerPage extends StatefulWidget {
-  const _FolderPickerPage({required this.uploader});
+  const _FolderPickerPage({
+    required this.uploader,
+    required this.displayFromStack,
+    required this.stripMyDrivePrefix,
+  });
 
   final WrDriveUploader uploader;
+  final String Function(List<({String id, String name})> stack)
+      displayFromStack;
+  final String Function(String path) stripMyDrivePrefix;
 
   @override
   State<_FolderPickerPage> createState() => _FolderPickerPageState();
@@ -403,7 +474,14 @@ class _FolderPickerPageState extends State<_FolderPickerPage> {
     return true;
   }
 
-  void _selectCurrent() => Navigator.pop(context, _current);
+  void _selectCurrent() => Navigator.pop(
+        context,
+        (
+          id: _current.id,
+          name: _current.name,
+          displayName: widget.displayFromStack(_stack),
+        ),
+      );
 
   Future<void> _search(String query) async {
     final q = query.trim();
@@ -496,7 +574,17 @@ class _FolderPickerPageState extends State<_FolderPickerPage> {
       final folder =
           await widget.uploader.createFolder(name, parentId: _current.id);
       if (!mounted) return;
-      Navigator.pop(context, (id: folder.id!, name: folder.name ?? name));
+      Navigator.pop(
+        context,
+        (
+          id: folder.id!,
+          name: folder.name ?? name,
+          displayName: [
+            widget.displayFromStack(_stack),
+            folder.name ?? name,
+          ].where((part) => part.isNotEmpty && part != 'My Drive').join(' › '),
+        ),
+      );
     } catch (e) {
       if (!mounted) return;
       setState(() => _busy = false);
@@ -601,7 +689,16 @@ class _FolderPickerPageState extends State<_FolderPickerPage> {
           subtitle: Text(path == null ? '場所を確認中…' : '場所: $path',
               maxLines: 2, overflow: TextOverflow.ellipsis),
           isThreeLine: false,
-          onTap: () => Navigator.pop(context, (id: f.id, name: f.name)),
+          onTap: () => Navigator.pop(
+            context,
+            (
+              id: f.id,
+              name: f.name,
+              displayName: path == null
+                  ? f.name
+                  : '${widget.stripMyDrivePrefix(path)} › ${f.name}',
+            ),
+          ),
         );
       },
     );
