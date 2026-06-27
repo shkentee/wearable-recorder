@@ -27,6 +27,10 @@ desktop.ini
 *.log
 out/
 sd.img
+HANDOFF.md
+artifacts/
+tools/__pycache__/
+app_mobile/*.png
 
 # secrets (never commit .env)
 .env

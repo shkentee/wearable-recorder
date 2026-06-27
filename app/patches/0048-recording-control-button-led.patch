@@ -1,0 +1,225 @@
+From: knsol <noreply@anthropic.com>
+Subject: [PATCH] fix: wire recording state to button, BLE control, and LED
+
+The mobile app already expects recording control at 19b10006... but the
+firmware never exposed it. Runtime LED was also hard-coded to recording=true,
+and the devkit button was compiled but not enabled/configured as a stable D5
+input.
+
+This patch adds one recording-enabled state in transport.c, exposes it over
+BLE, lets the physical single tap toggle it, keeps D5 pulled down, and enables
+CONFIG_OMI_ENABLE_BUTTON for the DK1+SPISD build.
+---
+diff --git a/omi/firmware/devkit/prj_xiao_ble_sense_devkitv1-spisd.conf b/omi/firmware/devkit/prj_xiao_ble_sense_devkitv1-spisd.conf
+index 9c9d47e..b49191d 100644
+--- a/omi/firmware/devkit/prj_xiao_ble_sense_devkitv1-spisd.conf
++++ b/omi/firmware/devkit/prj_xiao_ble_sense_devkitv1-spisd.conf
+@@ -97,6 +97,9 @@ CONFIG_LOG_DEFAULT_LEVEL=3
+ # CONFIG_LOG_BACKEND_RTT=y
+ CONFIG_OMI_CODEC_OPUS=y
+ 
++# Runtime physical button: short press toggles recording, long press powers off.
++CONFIG_OMI_ENABLE_BUTTON=y
++
+ # SD Card Support
+ CONFIG_OMI_OFFLINE_STORAGE=y
+ CONFIG_DISK_ACCESS=y
+diff --git a/omi/firmware/devkit/src/button.c b/omi/firmware/devkit/src/button.c
+index cf299af..a0b7a98 100644
+--- a/omi/firmware/devkit/src/button.c
++++ b/omi/firmware/devkit/src/button.c
+@@ -71,11 +71,7 @@ void button_pressed_callback(const struct device *dev, struct gpio_callback *cb,
+ {
+     int temp = gpio_pin_get_raw(dev, d5_pin_input.pin);
+     LOG_PRINTK("button_pressed_callback %d\n", temp);
+-    if (temp) {
+-        was_pressed = false;
+-    } else {
+-        was_pressed = true;
+-    }
++    was_pressed = (temp != 0);
+ }
+ #define BUTTON_CHECK_INTERVAL 40 // 0.04 seconds, 25 Hz
+ 
+@@ -127,6 +123,10 @@ static inline void notify_tap()
+ {
+     final_button_state[0] = SINGLE_TAP;
+     LOG_INF("Button single tap");
++    bool next_recording = !wr_recording_is_enabled();
++    wr_recording_set_enabled(next_recording);
++    final_button_state[1] = next_recording ? 1 : 0;
++    LOG_INF("Recording %s by physical button", next_recording ? "started" : "stopped");
+     struct bt_conn *conn = get_current_connection();
+     if (conn != NULL) {
+         bt_gatt_notify(conn, &button_service.attrs[1], &final_button_state, sizeof(final_button_state));
+@@ -471,7 +471,7 @@ int button_init()
+         return -1;
+     }
+ 
+-    int err2 = gpio_pin_configure_dt(&d5_pin_input, GPIO_INPUT);
++    int err2 = gpio_pin_configure_dt(&d5_pin_input, GPIO_INPUT | GPIO_PULL_DOWN);
+ 
+     if (err2 != 0) {
+         LOG_ERR("Error setting up D5 Pin");
+diff --git a/omi/firmware/devkit/src/transport.c b/omi/firmware/devkit/src/transport.c
+index f615769..89197a9 100644
+--- a/omi/firmware/devkit/src/transport.c
++++ b/omi/firmware/devkit/src/transport.c
+@@ -31,6 +31,8 @@ extern bool is_connected;
+ extern bool storage_is_on;
+ extern uint8_t file_count;
+ extern uint32_t file_num_array[2];
++void wr_led_status_set_recording(bool on);
++void turnoff_all(void);
+ 
+ /* Patch 0035: BLE-readable diagnostic counter for write_to_storage. */
+ uint32_t wts_count = 0;
+@@ -76,6 +78,36 @@ static ssize_t settings_mic_gain_read_handler(struct bt_conn *conn,
+                                               uint16_t len,
+                                               uint16_t offset);
+ 
++static ssize_t recording_control_write_handler(struct bt_conn *conn,
++                                               const struct bt_gatt_attr *attr,
++                                               const void *buf,
++                                               uint16_t len,
++                                               uint16_t offset,
++                                               uint8_t flags);
++static ssize_t recording_control_read_handler(struct bt_conn *conn,
++                                              const struct bt_gatt_attr *attr,
++                                              void *buf,
++                                              uint16_t len,
++                                              uint16_t offset);
++
++static bool wr_recording_enabled = true;
++
++bool wr_recording_is_enabled(void)
++{
++    return wr_recording_enabled;
++}
++
++void wr_recording_set_enabled(bool enabled)
++{
++    wr_recording_enabled = enabled;
++    wr_led_status_set_recording(enabled);
++    LOG_INF("Recording %s", enabled ? "enabled" : "paused");
++}
++
++static struct bt_uuid_128 recording_control_service_uuid =
++    BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10006, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
++static struct bt_uuid_128 recording_control_char_uuid =
++    BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10006, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
+ static void dfu_ccc_config_changed_handler(const struct bt_gatt_attr *attr, uint16_t value);
+ static ssize_t dfu_control_point_write_handler(struct bt_conn *conn,
+                                                const struct bt_gatt_attr *attr,
+@@ -147,6 +179,17 @@ static struct bt_gatt_attr settings_service_attr[] = {
+ };
+ 
+ static struct bt_gatt_service settings_service = BT_GATT_SERVICE(settings_service_attr);
++static struct bt_gatt_attr recording_control_service_attr[] = {
++    BT_GATT_PRIMARY_SERVICE(&recording_control_service_uuid),
++    BT_GATT_CHARACTERISTIC(&recording_control_char_uuid.uuid,
++                           BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE,
++                           BT_GATT_PERM_READ | BT_GATT_PERM_WRITE,
++                           recording_control_read_handler,
++                           recording_control_write_handler,
++                           NULL),
++};
++
++static struct bt_gatt_service recording_control_service = BT_GATT_SERVICE(recording_control_service_attr);
+ 
+ // Nordic Legacy DFU service with UUID 00001530-1212-EFDE-1523-785FEABCD123
+ // exposes following characteristics:
+@@ -393,6 +436,39 @@ static ssize_t settings_mic_gain_read_handler(struct bt_conn *conn,
+     return bt_gatt_attr_read(conn, attr, buf, len, offset, &gain_level, sizeof(gain_level));
+ }
+ 
++
++static ssize_t recording_control_write_handler(struct bt_conn *conn,
++                                               const struct bt_gatt_attr *attr,
++                                               const void *buf,
++                                               uint16_t len,
++                                               uint16_t offset,
++                                               uint8_t flags)
++{
++    if (offset != 0 || len < 1) {
++        return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
++    }
++
++    const uint8_t command = ((const uint8_t *)buf)[0];
++    if (command == 2) {
++        wr_recording_set_enabled(false);
++        bt_off();
++        turnoff_all();
++        return len;
++    }
++
++    wr_recording_set_enabled(command != 0);
++    return len;
++}
++
++static ssize_t recording_control_read_handler(struct bt_conn *conn,
++                                              const struct bt_gatt_attr *attr,
++                                              void *buf,
++                                              uint16_t len,
++                                              uint16_t offset)
++{
++    uint8_t state = wr_recording_enabled ? 1 : 0;
++    return bt_gatt_attr_read(conn, attr, buf, len, offset, &state, sizeof(state));
++}
+ //
+ // DFU Service Handlers
+ //
+@@ -822,9 +898,10 @@ void pusher(void)
+         // would consume two packets per iteration if both branches ran,
+         // so omi made them mutually exclusive. We want both, so we read
+         // once here and let the helpers operate on tx_buffer.
+-        const bool sd_write_allowed = !storage_is_on;
++        const bool sd_write_allowed = !storage_is_on && wr_recording_enabled;
+         const bool ble_push_allowed = valid;
+-        if ((sd_write_allowed || ble_push_allowed) && read_from_tx_queue()) {
++        const bool discard_allowed = !wr_recording_enabled && !ble_push_allowed;
++        if ((sd_write_allowed || ble_push_allowed || discard_allowed) && read_from_tx_queue()) {
+             if (sd_write_allowed) {
+                 bool result = false;
+                 if (file_num_array[1] < MAX_STORAGE_BYTES) {
+@@ -915,6 +992,8 @@ int bt_on()
+     bt_le_adv_start(BT_LE_ADV_CONN, bt_ad, ARRAY_SIZE(bt_ad), bt_sd, ARRAY_SIZE(bt_sd));
+     bt_gatt_service_register(&storage_service);
+     bt_gatt_service_register(&settings_service);
++    bt_gatt_service_register(&recording_control_service);
++    wr_recording_set_enabled(true);
+     sd_on();
+     mic_on();
+ 
+@@ -950,6 +1029,8 @@ int transport_start()
+     memset(storage_temp_data, 0, OPUS_PADDED_LENGTH * 4);
+     bt_gatt_service_register(&storage_service);
+     bt_gatt_service_register(&settings_service);
++    bt_gatt_service_register(&recording_control_service);
++    wr_recording_set_enabled(true);
+     bt_gatt_service_register(&audio_service);
+     bt_gatt_service_register(&dfu_service);
+     err = bt_le_adv_start(BT_LE_ADV_CONN, bt_ad, ARRAY_SIZE(bt_ad), bt_sd, ARRAY_SIZE(bt_sd));
+diff --git a/omi/firmware/devkit/src/transport.h b/omi/firmware/devkit/src/transport.h
+index 800f33e..52a0e8e 100644
+--- a/omi/firmware/devkit/src/transport.h
++++ b/omi/firmware/devkit/src/transport.h
+@@ -1,6 +1,8 @@
+ #ifndef TRANSPORT_H
+ #define TRANSPORT_H
+ 
++#include <stdbool.h>
++
+ #include <zephyr/drivers/sensor.h>
+ typedef struct sensors {
+ 
+@@ -23,6 +25,8 @@ int broadcast_audio_packets(uint8_t *buffer, size_t size);
+ struct bt_conn *get_current_connection();
+ int bt_on();
+ int bt_off();
++bool wr_recording_is_enabled(void);
++void wr_recording_set_enabled(bool enabled);
+ 
+ void accel_off();
+ #endif
+\ No newline at end of file
