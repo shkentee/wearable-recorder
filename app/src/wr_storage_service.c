@@ -81,17 +81,104 @@ static struct bt_uuid_128 wr_storage_ctrl_uuid =
 /* Transfer state                                                      */
 /* ------------------------------------------------------------------ */
 
-static enum {
+enum wr_storage_state {
 	WR_ST_IDLE,
 	WR_ST_LISTING,
 	WR_ST_FETCHING,
-} wr_state = WR_ST_IDLE;
+};
+
+static enum wr_storage_state wr_state = WR_ST_IDLE;
+static uint32_t wr_state_generation;
+static K_MUTEX_DEFINE(wr_state_mutex);
 
 /* Filename requested by a FETCH command (null-terminated). */
 static char wr_fetch_name[64];
 
 /* Connection that subscribed to storageStream notifications. */
 static struct bt_conn *wr_sub_conn;
+
+static bool wr_state_begin(enum wr_storage_state state, struct bt_conn *conn,
+			   const char *fetch_name)
+{
+	bool started = false;
+
+	k_mutex_lock(&wr_state_mutex, K_FOREVER);
+	if (wr_state == WR_ST_IDLE) {
+		wr_sub_conn = conn;
+		if (fetch_name) {
+			strncpy(wr_fetch_name, fetch_name, sizeof(wr_fetch_name) - 1);
+			wr_fetch_name[sizeof(wr_fetch_name) - 1] = '\0';
+		}
+		wr_state = state;
+		wr_state_generation++;
+		started = true;
+	}
+	k_mutex_unlock(&wr_state_mutex);
+
+	return started;
+}
+
+static void wr_state_abort(void)
+{
+	k_mutex_lock(&wr_state_mutex, K_FOREVER);
+	wr_state = WR_ST_IDLE;
+	wr_state_generation++;
+	k_mutex_unlock(&wr_state_mutex);
+}
+
+static void wr_state_unsubscribe(void)
+{
+	k_mutex_lock(&wr_state_mutex, K_FOREVER);
+	wr_state = WR_ST_IDLE;
+	wr_sub_conn = NULL;
+	wr_state_generation++;
+	k_mutex_unlock(&wr_state_mutex);
+}
+
+static bool wr_state_snapshot(enum wr_storage_state expected,
+			      struct bt_conn **conn,
+			      uint32_t *generation,
+			      char *fetch_name,
+			      size_t fetch_name_len)
+{
+	bool active = false;
+
+	k_mutex_lock(&wr_state_mutex, K_FOREVER);
+	if (wr_state == expected && wr_sub_conn) {
+		*conn = wr_sub_conn;
+		*generation = wr_state_generation;
+		if (fetch_name && fetch_name_len > 0) {
+			strncpy(fetch_name, wr_fetch_name, fetch_name_len - 1);
+			fetch_name[fetch_name_len - 1] = '\0';
+		}
+		active = true;
+	}
+	k_mutex_unlock(&wr_state_mutex);
+
+	return active;
+}
+
+static bool wr_state_matches(enum wr_storage_state expected,
+			     uint32_t generation)
+{
+	bool matches;
+
+	k_mutex_lock(&wr_state_mutex, K_FOREVER);
+	matches = wr_state == expected && wr_state_generation == generation;
+	k_mutex_unlock(&wr_state_mutex);
+
+	return matches;
+}
+
+static void wr_state_finish(enum wr_storage_state expected,
+			    uint32_t generation)
+{
+	k_mutex_lock(&wr_state_mutex, K_FOREVER);
+	if (wr_state == expected && wr_state_generation == generation) {
+		wr_state = WR_ST_IDLE;
+	}
+	k_mutex_unlock(&wr_state_mutex);
+}
 
 /* ------------------------------------------------------------------ */
 /* CCC                                                                 */
@@ -104,8 +191,7 @@ static void wr_storage_ccc_changed(const struct bt_gatt_attr *attr,
 		LOG_INF("wr_storage: client subscribed");
 	} else {
 		LOG_INF("wr_storage: client unsubscribed — aborting transfer");
-		wr_state = WR_ST_IDLE;
-		wr_sub_conn = NULL;
+		wr_state_unsubscribe();
 	}
 }
 
@@ -183,9 +269,10 @@ static void wr_storage_list_fn(struct k_work *work)
 {
 	ARG_UNUSED(work);
 
-	struct bt_conn *conn = wr_sub_conn;
+	struct bt_conn *conn;
+	uint32_t generation;
 
-	if (!conn || wr_state != WR_ST_LISTING) {
+	if (!wr_state_snapshot(WR_ST_LISTING, &conn, &generation, NULL, 0)) {
 		return;
 	}
 
@@ -196,13 +283,13 @@ static void wr_storage_list_fn(struct k_work *work)
 	if (fs_opendir(&dir, WR_STORAGE_DIR) != 0) {
 		LOG_WRN("wr_storage: opendir %s failed", WR_STORAGE_DIR);
 		wr_notify(conn, WR_NOTIF_ERROR, NULL, 0);
-		wr_state = WR_ST_IDLE;
+		wr_state_finish(WR_ST_LISTING, generation);
 		return;
 	}
 
 	struct fs_dirent entry;
 
-	while (wr_state == WR_ST_LISTING &&
+	while (wr_state_matches(WR_ST_LISTING, generation) &&
 	       fs_readdir(&dir, &entry) == 0 &&
 	       entry.name[0] != '\0') {
 
@@ -230,41 +317,44 @@ static void wr_storage_list_fn(struct k_work *work)
 
 	fs_closedir(&dir);
 
-	if (wr_state != WR_ST_IDLE) {
+	if (wr_state_matches(WR_ST_LISTING, generation)) {
 		wr_notify(conn, WR_NOTIF_END, NULL, 0);
 	}
-	wr_state = WR_ST_IDLE;
+	wr_state_finish(WR_ST_LISTING, generation);
 }
 
 static void wr_storage_fetch_fn(struct k_work *work)
 {
 	ARG_UNUSED(work);
 
-	struct bt_conn *conn = wr_sub_conn;
+	struct bt_conn *conn;
+	uint32_t generation;
+	char fetch_name[sizeof(wr_fetch_name)];
 
-	if (!conn || wr_state != WR_ST_FETCHING) {
+	if (!wr_state_snapshot(WR_ST_FETCHING, &conn, &generation,
+			       fetch_name, sizeof(fetch_name))) {
 		return;
 	}
 
 	char path[128];
 
-	snprintf(path, sizeof(path), "%s/%s", WR_STORAGE_DIR, wr_fetch_name);
+	snprintf(path, sizeof(path), "%s/%s", WR_STORAGE_DIR, fetch_name);
 
 	struct fs_file_t file;
 
 	fs_file_t_init(&file);
 
 	if (fs_open(&file, path, FS_O_READ) != 0) {
-		LOG_WRN("wr_storage: open %s failed", wr_fetch_name);
+		LOG_WRN("wr_storage: open %s failed", fetch_name);
 		wr_notify(conn, WR_NOTIF_ERROR, NULL, 0);
-		wr_state = WR_ST_IDLE;
+		wr_state_finish(WR_ST_FETCHING, generation);
 		return;
 	}
 
 	uint8_t chunk[WR_STORAGE_CHUNK_SIZE];
 	ssize_t n;
 
-	while (wr_state == WR_ST_FETCHING &&
+	while (wr_state_matches(WR_ST_FETCHING, generation) &&
 	       (n = fs_read(&file, chunk, sizeof(chunk))) > 0) {
 
 		int err = wr_notify(conn, WR_NOTIF_DATA, chunk, (uint16_t)n);
@@ -277,12 +367,12 @@ static void wr_storage_fetch_fn(struct k_work *work)
 
 	fs_close(&file);
 
-	if (wr_state != WR_ST_IDLE) {
+	if (wr_state_matches(WR_ST_FETCHING, generation)) {
 		wr_notify(conn, WR_NOTIF_END, NULL, 0);
 	}
-	wr_state = WR_ST_IDLE;
+	wr_state_finish(WR_ST_FETCHING, generation);
 
-	LOG_INF("wr_storage: fetch complete: %s", wr_fetch_name);
+	LOG_INF("wr_storage: fetch complete: %s", fetch_name);
 }
 
 static K_WORK_DEFINE(wr_list_work,  wr_storage_list_fn);
@@ -310,8 +400,11 @@ static ssize_t wr_storage_ctrl_write(struct bt_conn *conn,
 	switch (cmd[0]) {
 	case WR_CMD_LIST:
 		LOG_INF("wr_storage: LIST requested");
-		wr_sub_conn = conn;
-		wr_state = WR_ST_LISTING;
+		if (!wr_state_begin(WR_ST_LISTING, conn, NULL)) {
+			LOG_WRN("wr_storage: LIST rejected while busy");
+			wr_notify(conn, WR_NOTIF_ERROR, NULL, 0);
+			return BT_GATT_ERR(BT_ATT_ERR_UNLIKELY);
+		}
 		k_work_submit(&wr_list_work);
 		break;
 
@@ -324,18 +417,22 @@ static ssize_t wr_storage_ctrl_write(struct bt_conn *conn,
 		if (name_len >= sizeof(wr_fetch_name)) {
 			name_len = sizeof(wr_fetch_name) - 1;
 		}
-		memcpy(wr_fetch_name, cmd + 1, name_len);
-		wr_fetch_name[name_len] = '\0';
-		LOG_INF("wr_storage: FETCH %s", wr_fetch_name);
-		wr_sub_conn = conn;
-		wr_state = WR_ST_FETCHING;
+		char fetch_name[sizeof(wr_fetch_name)];
+		memcpy(fetch_name, cmd + 1, name_len);
+		fetch_name[name_len] = '\0';
+		LOG_INF("wr_storage: FETCH %s", fetch_name);
+		if (!wr_state_begin(WR_ST_FETCHING, conn, fetch_name)) {
+			LOG_WRN("wr_storage: FETCH rejected while busy");
+			wr_notify(conn, WR_NOTIF_ERROR, NULL, 0);
+			return BT_GATT_ERR(BT_ATT_ERR_UNLIKELY);
+		}
 		k_work_submit(&wr_fetch_work);
 		break;
 	}
 
 	case WR_CMD_ABORT:
 		LOG_INF("wr_storage: ABORT");
-		wr_state = WR_ST_IDLE;
+		wr_state_abort();
 		break;
 
 	default:

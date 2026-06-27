@@ -367,99 +367,107 @@ class WrSdSync {
 
   Future<void> _uploadLoop() async {
     while (_running) {
-      final prefs = await SharedPreferences.getInstance();
-      _wifiOnly = prefs.getBool(kWifiOnlyKey) ?? false;
-      _driveUploadAuto = prefs.getBool(kDriveUploadAutoKey) ?? true;
-      _uploadDoneBytes = 0;
-      _uploadTotalBytes = 0;
-
-      final dir = await _outboxDir();
-      List<({File file, int length})> pending;
       try {
-        final files =
-            await dir.list().where((e) => e is File).cast<File>().toList();
-        files.sort((a, b) => a.path.compareTo(b.path));
-        pending = [];
-        for (final f in files) {
-          try {
-            pending.add((file: f, length: await f.length()));
-          } catch (_) {}
-        }
-      } catch (_) {
-        await Future<void>.delayed(const Duration(seconds: 5));
-        continue;
-      }
+        final prefs = await SharedPreferences.getInstance();
+        _wifiOnly = prefs.getBool(kWifiOnlyKey) ?? false;
+        _driveUploadAuto = prefs.getBool(kDriveUploadAutoKey) ?? true;
+        _uploadDoneBytes = 0;
+        _uploadTotalBytes = 0;
 
-      if (pending.isEmpty) {
-        _waitingForManualUpload = false;
-        _uploadingNow = false;
-        _curUploadName = null;
-        await _emitUploadStatus();
-        await Future<void>.delayed(const Duration(seconds: 5));
-        continue;
-      }
-
-      if (!_driveUploadAuto && !_manualUploadTrigger) {
-        _waitingForManualUpload = true;
-        _uploadingNow = false;
-        _curUploadName = null;
-        await _emitUploadStatus();
-        await Future<void>.delayed(const Duration(seconds: 5));
-        continue;
-      }
-      _manualUploadTrigger = false;
-      _waitingForManualUpload = false;
-
-      if (_wifiOnly) {
-        final result = await Connectivity().checkConnectivity();
-        final onWifi = result.contains(ConnectivityResult.wifi);
-        if (!onWifi) {
-          _blockedNoWifi = true;
-          _uploadingNow = false;
-          await _emitUploadStatus();
-          await Future<void>.delayed(const Duration(seconds: 15));
+        final dir = await _outboxDir();
+        List<({File file, int length})> pending;
+        try {
+          final files =
+              await dir.list().where((e) => e is File).cast<File>().toList();
+          files.sort((a, b) => a.path.compareTo(b.path));
+          pending = [];
+          for (final f in files) {
+            try {
+              pending.add((file: f, length: await f.length()));
+            } catch (_) {}
+          }
+        } catch (_) {
+          await Future<void>.delayed(const Duration(seconds: 5));
           continue;
         }
-      }
-      _blockedNoWifi = false;
 
-      _uploadTotalBytes = pending.fold<int>(0, (sum, p) => sum + p.length);
-      _uploadDoneBytes = 0;
-      for (final item in pending) {
-        if (!_running) break;
+        if (pending.isEmpty) {
+          _waitingForManualUpload = false;
+          _uploadingNow = false;
+          _curUploadName = null;
+          await _emitUploadStatus();
+          await Future<void>.delayed(const Duration(seconds: 5));
+          continue;
+        }
+
+        if (!_driveUploadAuto && !_manualUploadTrigger) {
+          _waitingForManualUpload = true;
+          _uploadingNow = false;
+          _curUploadName = null;
+          await _emitUploadStatus();
+          await Future<void>.delayed(const Duration(seconds: 5));
+          continue;
+        }
+        _manualUploadTrigger = false;
+        _waitingForManualUpload = false;
+
         if (_wifiOnly) {
           final result = await Connectivity().checkConnectivity();
-          if (!result.contains(ConnectivityResult.wifi)) {
+          final onWifi = result.contains(ConnectivityResult.wifi);
+          if (!onWifi) {
             _blockedNoWifi = true;
             _uploadingNow = false;
             await _emitUploadStatus();
+            await Future<void>.delayed(const Duration(seconds: 15));
+            continue;
+          }
+        }
+        _blockedNoWifi = false;
+
+        _uploadTotalBytes = pending.fold<int>(0, (sum, p) => sum + p.length);
+        _uploadDoneBytes = 0;
+        for (final item in pending) {
+          if (!_running) break;
+          if (_wifiOnly) {
+            final result = await Connectivity().checkConnectivity();
+            if (!result.contains(ConnectivityResult.wifi)) {
+              _blockedNoWifi = true;
+              _uploadingNow = false;
+              await _emitUploadStatus();
+              break;
+            }
+          }
+          final f = item.file;
+          final name = f.uri.pathSegments.last;
+          _uploadingNow = true;
+          _curUploadName = name;
+          await _emitUploadStatus();
+          try {
+            final id = await uploader.uploadIfNew(f, name);
+            if (id != null) {
+              uploadedChunks++;
+              if (!_events.isClosed) _events.add('uploaded $name');
+            }
+            await f.delete();
+            _uploadDoneBytes += item.length;
+            await _emitUploadStatus();
+          } catch (e) {
+            if (!_events.isClosed) _events.add('upload error $name: $e');
+            await Future<void>.delayed(const Duration(seconds: 5));
             break;
           }
         }
-        final f = item.file;
-        final name = f.uri.pathSegments.last;
-        _uploadingNow = true;
-        _curUploadName = name;
+        _uploadingNow = false;
+        _curUploadName = null;
         await _emitUploadStatus();
-        try {
-          final id = await uploader.uploadIfNew(f, name);
-          if (id != null) {
-            uploadedChunks++;
-            if (!_events.isClosed) _events.add('uploaded $name');
-          }
-          await f.delete();
-          _uploadDoneBytes += item.length;
-          await _emitUploadStatus();
-        } catch (e) {
-          if (!_events.isClosed) _events.add('upload error $name: $e');
+        if (_uploadDoneBytes < _uploadTotalBytes) {
           await Future<void>.delayed(const Duration(seconds: 5));
-          break;
         }
-      }
-      _uploadingNow = false;
-      _curUploadName = null;
-      await _emitUploadStatus();
-      if (_uploadDoneBytes < _uploadTotalBytes) {
+      } catch (e) {
+        _uploadingNow = false;
+        _curUploadName = null;
+        if (!_events.isClosed) _events.add('upload loop error: $e');
+        await _emitUploadStatus();
         await Future<void>.delayed(const Duration(seconds: 5));
       }
     }
@@ -472,74 +480,80 @@ class WrSdSync {
   /// device out-record the old 64 KB-per-30 s sync.
   Future<void> _loop() async {
     while (_running) {
-      _schedule = await SyncSchedule.load();
-      final now = DateTime.now();
-      if (_manualTrigger) {
-        _manualTrigger = false;
-        _manualDrainActive = true;
-      } else if (_schedule.mode == SyncMode.manual) {
-        _timedDrainActive = false;
-        if (!_manualDrainActive) {
-          await Future<void>.delayed(const Duration(seconds: 5));
+      try {
+        _schedule = await SyncSchedule.load();
+        final now = DateTime.now();
+        if (_manualTrigger) {
+          _manualTrigger = false;
+          _manualDrainActive = true;
+        } else if (_schedule.mode == SyncMode.manual) {
+          _timedDrainActive = false;
+          if (!_manualDrainActive) {
+            await Future<void>.delayed(const Duration(seconds: 5));
+            continue;
+          }
+        } else if (!_timedDrainActive &&
+            !_schedule.shouldStart(now,
+                lastScheduledDate: _lastScheduledDate,
+                lastIntervalRun: _lastIntervalRun)) {
+          // Outside the configured schedule — re-check shortly.
+          await Future<void>.delayed(const Duration(seconds: 20));
           continue;
         }
-      } else if (!_timedDrainActive &&
-          !_schedule.shouldStart(now,
-              lastScheduledDate: _lastScheduledDate,
-              lastIntervalRun: _lastIntervalRun)) {
-        // Outside the configured schedule — re-check shortly.
-        await Future<void>.delayed(const Duration(seconds: 20));
-        continue;
-      }
 
-      // Drain the whole backlog (catch up), retrying transient errors so a
-      // mid-drain hiccup doesn't abandon the accumulated bytes.
-      int pulled = 0;
-      try {
-        // Alternate one pass of the live current file with one pass of the
-        // closed-file backlog (old sessions / rec_*), so neither starves — the
-        // oldest data drains in parallel with keeping the live file moving,
-        // which is what "drain everything older than ~15 min" needs.
-        pulled = await _drainOnce();
-        pulled += await _drainClosedFiles();
-      } catch (e) {
-        if (!_events.isClosed) _events.add('sync error: $e');
-        await _reopenSession();
-        await Future<void>.delayed(const Duration(seconds: 2));
-        continue; // retry without marking this run complete
-      }
+        // Drain the whole backlog (catch up), retrying transient errors so a
+        // mid-drain hiccup doesn't abandon the accumulated bytes.
+        int pulled = 0;
+        try {
+          // Alternate one pass of the live current file with one pass of the
+          // closed-file backlog (old sessions / rec_*), so neither starves — the
+          // oldest data drains in parallel with keeping the live file moving,
+          // which is what "drain everything older than ~15 min" needs.
+          pulled = await _drainOnce();
+          pulled += await _drainClosedFiles();
+        } catch (e) {
+          if (!_events.isClosed) _events.add('sync error: $e');
+          await _reopenSession();
+          await Future<void>.delayed(const Duration(seconds: 2));
+          continue; // retry without marking this run complete
+        }
 
-      if (_schedule.mode == SyncMode.manual) {
-        if (pulled > 0) {
-          // Manual pull means "catch up now", not "fetch one tiny pass".
+        if (_schedule.mode == SyncMode.manual) {
+          if (pulled > 0) {
+            // Manual pull means "catch up now", not "fetch one tiny pass".
+            await Future<void>.delayed(const Duration(milliseconds: 200));
+            continue;
+          }
+          _manualDrainActive = false;
+        } else if (_schedule.mode != SyncMode.continuous && pulled > 0) {
+          // A timed run is only complete once the backlog is empty. Previously an
+          // hourly run pulled one small pass, then waited another hour even when
+          // more SD audio remained queued on the device.
+          _timedDrainActive = true;
           await Future<void>.delayed(const Duration(milliseconds: 200));
           continue;
         }
-        _manualDrainActive = false;
-      } else if (_schedule.mode != SyncMode.continuous && pulled > 0) {
-        // A timed run is only complete once the backlog is empty. Previously an
-        // hourly run pulled one small pass, then waited another hour even when
-        // more SD audio remained queued on the device.
-        _timedDrainActive = true;
-        await Future<void>.delayed(const Duration(milliseconds: 200));
-        continue;
-      }
 
-      _timedDrainActive = false;
+        _timedDrainActive = false;
 
-      // Record completion (gates the scheduled / interval modes).
-      final done = DateTime.now();
-      _lastScheduledDate = done;
-      _lastIntervalRun = done;
+        // Record completion (gates the scheduled / interval modes).
+        final done = DateTime.now();
+        _lastScheduledDate = done;
+        _lastIntervalRun = done;
 
-      // While a backlog remains, loop promptly to keep draining; once fully
-      // caught up, idle-poll. Timed modes just re-check their trigger.
-      if (_schedule.mode == SyncMode.manual) {
-        await Future<void>.delayed(const Duration(milliseconds: 500));
-      } else {
-        await Future<void>.delayed(_schedule.mode != SyncMode.continuous
-            ? const Duration(seconds: 20)
-            : (pulled > 0 ? const Duration(milliseconds: 200) : _idlePoll));
+        // While a backlog remains, loop promptly to keep draining; once fully
+        // caught up, idle-poll. Timed modes just re-check their trigger.
+        if (_schedule.mode == SyncMode.manual) {
+          await Future<void>.delayed(const Duration(milliseconds: 500));
+        } else {
+          await Future<void>.delayed(_schedule.mode != SyncMode.continuous
+              ? const Duration(seconds: 20)
+              : (pulled > 0 ? const Duration(milliseconds: 200) : _idlePoll));
+        }
+      } catch (e) {
+        if (!_events.isClosed) _events.add('sync loop error: $e');
+        await _reopenSession();
+        await Future<void>.delayed(const Duration(seconds: 2));
       }
     }
   }
@@ -626,7 +640,9 @@ class WrSdSync {
     await _persistPending();
 
     if (pulled > 0) {
-      _events.add('synced +${pulled}B of $name @$_offset/$committed');
+      if (!_events.isClosed) {
+        _events.add('synced +${pulled}B of $name @$_offset/$committed');
+      }
     }
     _emitProgress();
     return pulled;

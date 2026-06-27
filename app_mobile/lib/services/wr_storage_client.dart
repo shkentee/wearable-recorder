@@ -52,6 +52,30 @@ class WrStorageSession {
   final BluetoothCharacteristic _ctrl;
 
   StreamSubscription<List<int>>? _sub;
+  Future<void> _operationTail = Future<void>.value();
+
+  Future<T> _runSerialized<T>(Future<T> Function() action) async {
+    final previous = _operationTail;
+    final release = Completer<void>();
+    _operationTail = release.future;
+
+    try {
+      await previous;
+    } catch (_) {
+      // A failed transfer must not block the next storage command forever.
+    }
+
+    try {
+      return await action();
+    } finally {
+      if (!release.isCompleted) release.complete();
+    }
+  }
+
+  Future<void> _clearSubscription() async {
+    await _sub?.cancel();
+    _sub = null;
+  }
 
   // -------------------------------------------------------------------
   // Factory
@@ -95,30 +119,36 @@ class WrStorageSession {
   Future<List<String>> listFiles({
     Duration timeout = const Duration(seconds: 30),
   }) async {
-    final files = <String>[];
-    final completer = Completer<void>();
+    return _runSerialized(() async {
+      final files = <String>[];
+      final completer = Completer<void>();
 
-    _sub?.cancel();
-    _sub = _stream.onValueReceived.listen((data) {
-      if (data.isEmpty) return;
-      switch (data[0]) {
-        case _notifFileEntry:
-          if (data.length > 1) {
-            files.add(String.fromCharCodes(data.sublist(1)));
-          }
-        case _notifEnd:
-          if (!completer.isCompleted) completer.complete();
-        case _notifError:
-          if (!completer.isCompleted) {
-            completer.completeError(
-                StateError('Storage service error during LIST'));
-          }
+      await _clearSubscription();
+      _sub = _stream.onValueReceived.listen((data) {
+        if (data.isEmpty) return;
+        switch (data[0]) {
+          case _notifFileEntry:
+            if (data.length > 1) {
+              files.add(String.fromCharCodes(data.sublist(1)));
+            }
+          case _notifEnd:
+            if (!completer.isCompleted) completer.complete();
+          case _notifError:
+            if (!completer.isCompleted) {
+              completer.completeError(
+                  StateError('Storage service error during LIST'));
+            }
+        }
+      });
+
+      try {
+        await _ctrl.write([_cmdList], withoutResponse: true);
+        await completer.future.timeout(timeout);
+        return files;
+      } finally {
+        await _clearSubscription();
       }
     });
-
-    await _ctrl.write([_cmdList], withoutResponse: true);
-    await completer.future.timeout(timeout);
-    return files;
   }
 
   /// Fetches the named file from the device SD card and returns its bytes.
@@ -132,67 +162,71 @@ class WrStorageSession {
     Duration idleTimeout = const Duration(seconds: 20),
     void Function(int bytes)? onProgress,
   }) async {
-    final chunks = <List<int>>[];
-    int totalBytes = 0;
-    final completer = Completer<void>();
+    return _runSerialized(() async {
+      final chunks = <List<int>>[];
+      int totalBytes = 0;
+      final completer = Completer<void>();
 
-    // Inactivity watchdog: a multi-MB recording can take many minutes over
-    // BLE (~6 KB/s), so a fixed total timeout wrongly aborts large files.
-    // Instead we only fail if no chunk arrives for [idleTimeout] — large
-    // transfers complete as long as data keeps flowing, and genuine stalls
-    // are caught quickly.
-    Timer? watchdog;
-    void resetWatchdog() {
-      watchdog?.cancel();
-      watchdog = Timer(idleTimeout, () {
-        if (!completer.isCompleted) {
-          completer.completeError(TimeoutException(
-              'storage fetch stalled: no data for ${idleTimeout.inSeconds}s '
-              'after $totalBytes bytes'));
+      // Inactivity watchdog: a multi-MB recording can take many minutes over
+      // BLE (~6 KB/s), so a fixed total timeout wrongly aborts large files.
+      // Instead we only fail if no chunk arrives for [idleTimeout] — large
+      // transfers complete as long as data keeps flowing, and genuine stalls
+      // are caught quickly.
+      Timer? watchdog;
+      void resetWatchdog() {
+        watchdog?.cancel();
+        watchdog = Timer(idleTimeout, () {
+          if (!completer.isCompleted) {
+            completer.completeError(TimeoutException(
+                'storage fetch stalled: no data for ${idleTimeout.inSeconds}s '
+                'after $totalBytes bytes'));
+          }
+        });
+      }
+
+      await _clearSubscription();
+      _sub = _stream.onValueReceived.listen((data) {
+        if (data.isEmpty) return;
+        resetWatchdog(); // any traffic (incl. the 0x04 size tag) keeps us alive
+        switch (data[0]) {
+          case _notifData:
+            if (data.length > 1) {
+              final payload = data.sublist(1);
+              chunks.add(payload);
+              totalBytes += payload.length;
+              onProgress?.call(totalBytes);
+            }
+          case _notifEnd:
+            if (!completer.isCompleted) completer.complete();
+          case _notifError:
+            if (!completer.isCompleted) {
+              completer.completeError(
+                  StateError('File not found on device: $filename'));
+            }
         }
       });
-    }
 
-    _sub?.cancel();
-    _sub = _stream.onValueReceived.listen((data) {
-      if (data.isEmpty) return;
-      resetWatchdog(); // any traffic (incl. the 0x04 size tag) keeps us alive
-      switch (data[0]) {
-        case _notifData:
-          if (data.length > 1) {
-            final payload = data.sublist(1);
-            chunks.add(payload);
-            totalBytes += payload.length;
-            onProgress?.call(totalBytes);
-          }
-        case _notifEnd:
-          if (!completer.isCompleted) completer.complete();
-        case _notifError:
-          if (!completer.isCompleted) {
-            completer.completeError(
-                StateError('File not found on device: $filename'));
-          }
+      resetWatchdog();
+      // [0x01][offset=0][length=0 -> to EOF][filename]
+      try {
+        await _ctrl.write(
+            [_cmdFetch, ..._le32(0), ..._le32(0), ...filename.codeUnits],
+            withoutResponse: true);
+        await completer.future;
+      } finally {
+        watchdog?.cancel();
+        await _clearSubscription();
       }
+
+      // Concatenate chunks into a single Uint8List.
+      final result = Uint8List(totalBytes);
+      var offset = 0;
+      for (final chunk in chunks) {
+        result.setRange(offset, offset + chunk.length, chunk);
+        offset += chunk.length;
+      }
+      return result;
     });
-
-    resetWatchdog();
-    // [0x01][offset=0][length=0 -> to EOF][filename]
-    await _ctrl.write([_cmdFetch, ..._le32(0), ..._le32(0), ...filename.codeUnits],
-        withoutResponse: true);
-    try {
-      await completer.future;
-    } finally {
-      watchdog?.cancel();
-    }
-
-    // Concatenate chunks into a single Uint8List.
-    final result = Uint8List(totalBytes);
-    var offset = 0;
-    for (final chunk in chunks) {
-      result.setRange(offset, offset + chunk.length, chunk);
-      offset += chunk.length;
-    }
-    return result;
   }
 
   /// Queries the current (growing) recording file and its committed size.
@@ -203,30 +237,34 @@ class WrStorageSession {
   Future<({String name, int size})?> status({
     Duration timeout = const Duration(seconds: 8),
   }) async {
-    final completer = Completer<({String name, int size})?>();
+    return _runSerialized(() async {
+      final completer = Completer<({String name, int size})?>();
 
-    _sub?.cancel();
-    _sub = _stream.onValueReceived.listen((data) {
-      if (data.isEmpty) return;
-      if (data[0] == _notifStatus && data.length >= 5) {
-        final size = data[1] | (data[2] << 8) | (data[3] << 16) | (data[4] << 24);
-        final name = data.length > 5
-            ? String.fromCharCodes(data.sublist(5))
-            : '';
-        if (!completer.isCompleted) {
-          completer.complete(name.isEmpty ? null : (name: name, size: size));
+      await _clearSubscription();
+      _sub = _stream.onValueReceived.listen((data) {
+        if (data.isEmpty) return;
+        if (data[0] == _notifStatus && data.length >= 5) {
+          final size =
+              data[1] | (data[2] << 8) | (data[3] << 16) | (data[4] << 24);
+          final name =
+              data.length > 5 ? String.fromCharCodes(data.sublist(5)) : '';
+          if (!completer.isCompleted) {
+            completer.complete(name.isEmpty ? null : (name: name, size: size));
+          }
+        } else if (data[0] == _notifError) {
+          if (!completer.isCompleted) completer.complete(null);
         }
-      } else if (data[0] == _notifError) {
-        if (!completer.isCompleted) completer.complete(null);
+      });
+
+      try {
+        await _ctrl.write([_cmdStatus], withoutResponse: true);
+        return await completer.future.timeout(timeout);
+      } on TimeoutException {
+        return null;
+      } finally {
+        await _clearSubscription();
       }
     });
-
-    await _ctrl.write([_cmdStatus], withoutResponse: true);
-    try {
-      return await completer.future.timeout(timeout);
-    } on TimeoutException {
-      return null;
-    }
   }
 
   /// Fetches a bounded window [offset, offset+length) of [filename].
@@ -242,79 +280,85 @@ class WrStorageSession {
     int length, {
     Duration idleTimeout = const Duration(seconds: 15),
   }) async {
-    final chunks = <List<int>>[];
-    int totalBytes = 0;
-    int committed = 0;
-    final completer = Completer<void>();
+    return _runSerialized(() async {
+      final chunks = <List<int>>[];
+      int totalBytes = 0;
+      int committed = 0;
+      final completer = Completer<void>();
 
-    Timer? watchdog;
-    void resetWatchdog() {
-      watchdog?.cancel();
-      watchdog = Timer(idleTimeout, () {
-        if (!completer.isCompleted) {
-          completer.completeError(TimeoutException(
-              'window fetch stalled: no data for ${idleTimeout.inSeconds}s '
-              'after $totalBytes bytes'));
+      Timer? watchdog;
+      void resetWatchdog() {
+        watchdog?.cancel();
+        watchdog = Timer(idleTimeout, () {
+          if (!completer.isCompleted) {
+            completer.completeError(TimeoutException(
+                'window fetch stalled: no data for ${idleTimeout.inSeconds}s '
+                'after $totalBytes bytes'));
+          }
+        });
+      }
+
+      await _clearSubscription();
+      _sub = _stream.onValueReceived.listen((data) {
+        if (data.isEmpty) return;
+        resetWatchdog();
+        switch (data[0]) {
+          case _notifFileSize:
+            if (data.length >= 5) {
+              committed =
+                  data[1] | (data[2] << 8) | (data[3] << 16) | (data[4] << 24);
+            }
+          case _notifData:
+            if (data.length > 1) {
+              final payload = data.sublist(1);
+              chunks.add(payload);
+              totalBytes += payload.length;
+            }
+          case _notifEnd:
+            if (!completer.isCompleted) completer.complete();
+          case _notifError:
+            if (!completer.isCompleted) {
+              completer.completeError(
+                  StateError('Storage error fetching $filename @$offset'));
+            }
         }
       });
-    }
 
-    _sub?.cancel();
-    _sub = _stream.onValueReceived.listen((data) {
-      if (data.isEmpty) return;
       resetWatchdog();
-      switch (data[0]) {
-        case _notifFileSize:
-          if (data.length >= 5) {
-            committed =
-                data[1] | (data[2] << 8) | (data[3] << 16) | (data[4] << 24);
-          }
-        case _notifData:
-          if (data.length > 1) {
-            final payload = data.sublist(1);
-            chunks.add(payload);
-            totalBytes += payload.length;
-          }
-        case _notifEnd:
-          if (!completer.isCompleted) completer.complete();
-        case _notifError:
-          if (!completer.isCompleted) {
-            completer.completeError(
-                StateError('Storage error fetching $filename @$offset'));
-          }
+      try {
+        await _ctrl.write([
+          _cmdFetch,
+          ..._le32(offset),
+          ..._le32(length),
+          ...filename.codeUnits
+        ], withoutResponse: true);
+        await completer.future;
+      } finally {
+        watchdog?.cancel();
+        await _clearSubscription();
       }
+
+      final result = Uint8List(totalBytes);
+      var o = 0;
+      for (final chunk in chunks) {
+        result.setRange(o, o + chunk.length, chunk);
+        o += chunk.length;
+      }
+      return (bytes: result, committedSize: committed);
     });
-
-    resetWatchdog();
-    await _ctrl.write(
-        [_cmdFetch, ..._le32(offset), ..._le32(length), ...filename.codeUnits],
-        withoutResponse: true);
-    try {
-      await completer.future;
-    } finally {
-      watchdog?.cancel();
-    }
-
-    final result = Uint8List(totalBytes);
-    var o = 0;
-    for (final chunk in chunks) {
-      result.setRange(o, o + chunk.length, chunk);
-      o += chunk.length;
-    }
-    return (bytes: result, committedSize: committed);
   }
 
   /// Sends an ABORT command and cancels the current subscription.
   Future<void> abort() async {
-    await _ctrl.write([_cmdAbort], withoutResponse: true);
-    _sub?.cancel();
-    _sub = null;
+    await _runSerialized(() async {
+      await _ctrl.write([_cmdAbort], withoutResponse: true);
+      await _clearSubscription();
+    });
   }
 
   /// Aborts any ongoing transfer and unsubscribes from notifications.
   Future<void> close() async {
-    _sub?.cancel();
-    _sub = null;
+    await _clearSubscription();
     try {
       await _ctrl.write([_cmdAbort], withoutResponse: true);
       await _stream.setNotifyValue(false);

@@ -52,6 +52,7 @@ class WrBleDevice {
   // Live audio characteristic (19b10001). Subscribed on demand, not on connect.
   BluetoothCharacteristic? _audioDataChar;
   bool _liveMonitor = false;
+  bool _tearingDown = false;
 
   /// Filesystem path of the dump file for the current/most-recent session,
   /// or null if no recording has started. Survives [disconnect] so callers
@@ -85,6 +86,8 @@ class WrBleDevice {
   String get id => _device.remoteId.str;
 
   Future<void> connect({Duration timeout = const Duration(seconds: 30)}) async {
+    await _stateSub?.cancel();
+    _stateSub = null;
     // autoConnect: true on Android avoids the GATT_ERROR (0x85 / 133) that
     // otherwise hits first-time connections to never-bonded peripherals.
     // It queues the connection at the OS level and retries until cancel,
@@ -101,6 +104,11 @@ class WrBleDevice {
     await _device.connectionState
         .firstWhere((s) => s == BluetoothConnectionState.connected)
         .timeout(timeout);
+    _stateSub = _device.connectionState.listen((state) {
+      if (state == BluetoothConnectionState.disconnected) {
+        unawaited(_handleLinkDisconnected());
+      }
+    });
     if (Platform.isAndroid) {
       // 247-byte MTU lets Opus audio notifications arrive unfragmented.
       try {
@@ -408,24 +416,52 @@ class WrBleDevice {
     return true;
   }
 
-  Future<void> disconnect() async {
-    await _notifySub?.cancel();
-    _notifySub = null;
-    _liveMonitor = false;
-    _audioDataChar = null;
-    await _batterySub?.cancel();
-    _batterySub = null;
-    await _stateSub?.cancel();
-    _stateSub = null;
-    await _sink?.close();
-    _sink = null;
-    _meterDecoder?.destroy();
-    _meterDecoder = null;
-    _meterMax = 0.0;
-    _meterCount = 0;
-    if (_device.isConnected) {
-      await _device.disconnect();
+  Future<void> _handleLinkDisconnected() async {
+    try {
+      await _teardownConnectionResources();
+    } catch (_) {
+      // Best-effort cleanup on an already dropped link.
     }
+  }
+
+  Future<void> _teardownConnectionResources({
+    bool cancelStateSub = false,
+    bool disconnectDevice = false,
+  }) async {
+    if (_tearingDown) return;
+    _tearingDown = true;
+    try {
+      await _notifySub?.cancel();
+      _notifySub = null;
+      _liveMonitor = false;
+      _audioDataChar = null;
+      _discoveredServices = null;
+      await _batterySub?.cancel();
+      _batterySub = null;
+      if (cancelStateSub) {
+        await _stateSub?.cancel();
+        _stateSub = null;
+      }
+      await _sink?.close();
+      _sink = null;
+      _meterDecoder?.destroy();
+      _meterDecoder = null;
+      _meterMax = 0.0;
+      _meterCount = 0;
+      if (!_audioLevel.isClosed) _audioLevel.add(0.0);
+      if (disconnectDevice && _device.isConnected) {
+        await _device.disconnect();
+      }
+    } finally {
+      _tearingDown = false;
+    }
+  }
+
+  Future<void> disconnect() async {
+    await _teardownConnectionResources(
+      cancelStateSub: true,
+      disconnectDevice: true,
+    );
   }
 
   Future<void> dispose() async {

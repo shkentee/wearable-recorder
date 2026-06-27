@@ -7,6 +7,12 @@ import 'package:wearable_recorder/services/wr_storage_client.dart';
 
 class _MockCharacteristic extends Mock implements BluetoothCharacteristic {}
 
+Future<void> _letSubscriptionRegister() async {
+  for (var i = 0; i < 4; i++) {
+    await Future<void>.delayed(Duration.zero);
+  }
+}
+
 void main() {
   late _MockCharacteristic mockStream;
   late _MockCharacteristic mockCtrl;
@@ -39,7 +45,7 @@ void main() {
       final session = makeSession();
       final future = session.listFiles();
 
-      await Future.microtask(() {}); // let subscription register
+      await _letSubscriptionRegister();
       streamCtrl.add([0x01, ...('1700000000.opus'.codeUnits)]);
       streamCtrl.add([0x01, ...('unsynced_ab12_00000.opus'.codeUnits)]);
       streamCtrl.add([0x03]); // END
@@ -54,7 +60,7 @@ void main() {
     test('sends LIST command byte 0x00', () async {
       final session = makeSession();
       final future = session.listFiles();
-      await Future.microtask(() {});
+      await _letSubscriptionRegister();
       streamCtrl.add([0x03]);
       await future;
 
@@ -68,7 +74,7 @@ void main() {
     test('returns empty list when no files before END', () async {
       final session = makeSession();
       final future = session.listFiles();
-      await Future.microtask(() {});
+      await _letSubscriptionRegister();
       streamCtrl.add([0x03]);
       expect(await future, isEmpty);
     });
@@ -76,7 +82,7 @@ void main() {
     test('throws StateError on ERROR notify', () async {
       final session = makeSession();
       final future = session.listFiles();
-      await Future.microtask(() {});
+      await _letSubscriptionRegister();
       streamCtrl.add([0xFF]);
       expect(future, throwsA(isA<StateError>()));
     });
@@ -86,7 +92,7 @@ void main() {
     test('concatenates DATA chunks until END', () async {
       final session = makeSession();
       final future = session.fetchFile('1700000000.opus');
-      await Future.microtask(() {});
+      await _letSubscriptionRegister();
 
       // Two data chunks of 3 bytes each.
       streamCtrl.add([0x02, 0x01, 0x02, 0x03]);
@@ -100,7 +106,7 @@ void main() {
     test('sends FETCH command with filename bytes', () async {
       final session = makeSession();
       final future = session.fetchFile('test.opus');
-      await Future.microtask(() {});
+      await _letSubscriptionRegister();
       streamCtrl.add([0x03]);
       await future;
 
@@ -123,7 +129,7 @@ void main() {
         'f.opus',
         onProgress: progress.add,
       );
-      await Future.microtask(() {});
+      await _letSubscriptionRegister();
       streamCtrl.add([0x02, 0xAA, 0xBB]); // 2 bytes
       streamCtrl.add([0x02, 0xCC]); // 1 byte
       streamCtrl.add([0x03]);
@@ -135,7 +141,7 @@ void main() {
     test('throws StateError when device sends ERROR', () async {
       final session = makeSession();
       final future = session.fetchFile('missing.opus');
-      await Future.microtask(() {});
+      await _letSubscriptionRegister();
       streamCtrl.add([0xFF]);
       expect(future, throwsA(isA<StateError>()));
     });
