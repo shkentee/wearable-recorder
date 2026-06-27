@@ -61,23 +61,35 @@ class WrForegroundService {
   /// knows which device is keeping the session open.
   static Future<void> start(String deviceName) async {
     if (!_android) return;
-    await FlutterForegroundTask.startService(
+    final result = await FlutterForegroundTask.startService(
       serviceId: 1001,
       notificationTitle: 'Recording active',
       notificationText: deviceName,
       callback: _wrForegroundEntryPoint,
     );
+    if (result is ServiceRequestFailure) {
+      throw StateError('Foreground service failed to start: ${result.error}');
+    }
   }
 
   /// Update the notification sub-text (e.g. to show packet count).
   static Future<void> update(String text) async {
     if (!_android) return;
-    await FlutterForegroundTask.updateService(notificationText: text);
+    final result =
+        await FlutterForegroundTask.updateService(notificationText: text);
+    if (result is ServiceRequestFailure) {
+      throw StateError('Foreground service failed to update: ${result.error}');
+    }
   }
 
   /// Stop the foreground service and dismiss the notification.
   static Future<void> stop() async {
     if (!_android) return;
-    await FlutterForegroundTask.stopService();
+    final result = await FlutterForegroundTask.stopService();
+    if (result is ServiceRequestFailure) {
+      final error = result.error;
+      if (error is ServiceNotStartedException) return;
+      throw StateError('Foreground service failed to stop: $error');
+    }
   }
 }

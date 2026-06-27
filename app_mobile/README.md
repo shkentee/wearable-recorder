@@ -43,6 +43,35 @@ flutter run -d <device-id>
 **しない**（既に存在する場合）。生成された `.gitignore` は本リポの
 .gitignore でカバーされる範囲なので追加で除外しなくてよい。
 
+### AndroidManifest.xml 追記
+
+`android/` は生成物として Git 管理していないため、ローカルで
+`flutter create` し直した場合は `android/app/src/main/AndroidManifest.xml`
+に以下を追加する。CI の `mobile` workflow でも同じ内容を自動注入している。
+
+`<application>` より前:
+
+```xml
+<uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+<uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+```
+
+`<application>` の中:
+
+```xml
+<service
+    android:name="com.pravera.flutter_foreground_task.service.ForegroundService"
+    android:foregroundServiceType="connectedDevice"
+    android:exported="false" />
+```
+
+古い `ForegroundTaskService` 名では `flutter_foreground_task` 8.x の
+フォアグラウンドサービスが起動せず、バックグラウンド維持通知も出ない。
+
 ## 必要 SDK
 
 | ツール | バージョン |
