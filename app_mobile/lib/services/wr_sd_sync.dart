@@ -130,6 +130,7 @@ class WrSdSync {
   bool _wifiOnly = false;
   bool _driveUploadAuto = true;
   bool _manualUploadTrigger = false;
+  bool _manualUploadDrainActive = false;
   bool _uploadingNow = false;
   bool _blockedNoWifi = false;
   bool _waitingForManualUpload = false;
@@ -191,7 +192,10 @@ class WrSdSync {
   void triggerManualPull() => _manualTrigger = true;
 
   /// Manually trigger Drive upload of queued chunks.
-  void triggerManualUpload() => _manualUploadTrigger = true;
+  void triggerManualUpload() {
+    _manualUploadTrigger = true;
+    _manualUploadDrainActive = true;
+  }
 
   void _emitProgress({bool fetching = false}) {
     if (_progress.isClosed) return;
@@ -309,11 +313,17 @@ class WrSdSync {
   }
 
   /// Writes the pending (not-yet-cut) bytes to disk. Heavier (a file write of up
-  /// to one chunk) so it's called on chunk cuts / every few windows, not always.
+  /// to one chunk) but must happen before the cursor is checkpointed; otherwise
+  /// a crash between fetch and checkpoint could skip bytes that only lived in
+  /// memory.
   Future<void> _persistPending() async {
     final name = _name;
     if (name == null) return;
     final pf = await _pendingFile(name);
+    if (_pending.length == 0) {
+      if (await pf.exists()) await pf.delete();
+      return;
+    }
     await pf.writeAsBytes(_pending.toBytes(), flush: true);
   }
 
@@ -345,7 +355,11 @@ class WrSdSync {
     final name = _chunkName(_chunkIndex);
     final dir = await _outboxDir();
     final f = File('${dir.path}/$name');
-    await f.writeAsBytes(bytes, flush: true);
+    final tmp = File('${dir.path}/$name.part');
+    if (await tmp.exists()) await tmp.delete();
+    await tmp.writeAsBytes(bytes, flush: true);
+    if (await f.exists()) await f.delete();
+    await tmp.rename(f.path);
     _chunkIndex++;
     if (!_events.isClosed) _events.add('queued $name (${bytes.length}B)');
     await _emitUploadStatus();
@@ -358,13 +372,27 @@ class WrSdSync {
     return dir;
   }
 
+  bool _isReadyOutboxFile(File f) {
+    final name = f.uri.pathSegments.last;
+    return name.endsWith('.opus_sd');
+  }
+
+  Future<List<File>> _readyOutboxFiles() async {
+    final dir = await _outboxDir();
+    final files = await dir
+        .list()
+        .where((e) => e is File)
+        .cast<File>()
+        .where(_isReadyOutboxFile)
+        .toList();
+    files.sort((a, b) => a.path.compareTo(b.path));
+    return files;
+  }
+
   Future<void> _emitUploadStatus() async {
     if (_uploadStatus.isClosed) return;
     try {
-      final dir = await _outboxDir();
-      final files =
-          await dir.list().where((e) => e is File).cast<File>().toList();
-      files.sort((a, b) => a.path.compareTo(b.path));
+      final files = await _readyOutboxFiles();
       int totalBytes = 0;
       for (final f in files) {
         try {
@@ -421,12 +449,9 @@ class WrSdSync {
         _uploadDoneBytes = 0;
         _uploadTotalBytes = 0;
 
-        final dir = await _outboxDir();
         List<({File file, int length})> pending;
         try {
-          final files =
-              await dir.list().where((e) => e is File).cast<File>().toList();
-          files.sort((a, b) => a.path.compareTo(b.path));
+          final files = await _readyOutboxFiles();
           pending = [];
           for (final f in files) {
             try {
@@ -439,6 +464,7 @@ class WrSdSync {
         }
 
         if (pending.isEmpty) {
+          _manualUploadDrainActive = false;
           _waitingForManualUpload = false;
           _uploadingNow = false;
           _curUploadName = null;
@@ -447,7 +473,12 @@ class WrSdSync {
           continue;
         }
 
-        if (!_driveUploadAuto && !_manualUploadTrigger) {
+        if (_manualUploadTrigger) {
+          _manualUploadTrigger = false;
+          _manualUploadDrainActive = true;
+        }
+
+        if (!_driveUploadAuto && !_manualUploadDrainActive) {
           _waitingForManualUpload = true;
           _uploadingNow = false;
           _curUploadName = null;
@@ -455,7 +486,6 @@ class WrSdSync {
           await Future<void>.delayed(const Duration(seconds: 5));
           continue;
         }
-        _manualUploadTrigger = false;
         _waitingForManualUpload = false;
 
         if (_wifiOnly) {
@@ -520,6 +550,24 @@ class WrSdSync {
     }
   }
 
+  bool get _hasClosedFileRetryPending => _closedFileRetryAfter.isNotEmpty;
+
+  Duration _nextClosedFileRetryWait() {
+    if (_closedFileRetryAfter.isEmpty) {
+      return const Duration(milliseconds: 200);
+    }
+    final now = DateTime.now();
+    DateTime? next;
+    for (final t in _closedFileRetryAfter.values) {
+      if (next == null || t.isBefore(next)) next = t;
+    }
+    final wait = next!.difference(now);
+    if (wait <= Duration.zero) return const Duration(milliseconds: 200);
+    return wait > const Duration(seconds: 20)
+        ? const Duration(seconds: 20)
+        : wait;
+  }
+
   /// Continuous driver: drain back-to-back while a backlog remains, otherwise
   /// idle-poll. Runs for the whole connection (only [stop] ends it). A transient
   /// BLE error reopens the cheap storage session (no reconnect) and retries
@@ -565,19 +613,29 @@ class WrSdSync {
           continue; // retry without marking this run complete
         }
 
+        final waitingForRetry = _hasClosedFileRetryPending;
         if (_schedule.mode == SyncMode.manual) {
-          if (pulled > 0) {
+          if (pulled > 0 || waitingForRetry) {
             // Manual pull means "catch up now", not "fetch one tiny pass".
-            await Future<void>.delayed(const Duration(milliseconds: 200));
+            await Future<void>.delayed(
+              waitingForRetry && pulled == 0
+                  ? _nextClosedFileRetryWait()
+                  : const Duration(milliseconds: 200),
+            );
             continue;
           }
           _manualDrainActive = false;
-        } else if (_schedule.mode != SyncMode.continuous && pulled > 0) {
+        } else if (_schedule.mode != SyncMode.continuous &&
+            (pulled > 0 || waitingForRetry)) {
           // A timed run is only complete once the backlog is empty. Previously an
           // hourly run pulled one small pass, then waited another hour even when
           // more SD audio remained queued on the device.
           _timedDrainActive = true;
-          await Future<void>.delayed(const Duration(milliseconds: 200));
+          await Future<void>.delayed(
+            waitingForRetry && pulled == 0
+                ? _nextClosedFileRetryWait()
+                : const Duration(milliseconds: 200),
+          );
           continue;
         }
 
@@ -656,14 +714,12 @@ class WrSdSync {
     }
 
     int pulled = 0;
-    int windows = 0;
     while (_running && _offset < committed && pulled < _maxBytesPerPass) {
       final res = await session.fetchWindow(name, _offset, _window);
       if (res.bytes.isEmpty) break;
       _pending.add(res.bytes);
       _offset += res.bytes.length;
       pulled += res.bytes.length;
-      windows++;
 
       // Throughput estimate over a ~2 s sliding reference (for the UI).
       final now = DateTime.now();
@@ -674,15 +730,16 @@ class WrSdSync {
         _rateRefTime = now;
       }
 
-      // Persist the cursor every window (cheap) so a mid-pass error can't lose
-      // or re-fetch progress; cut + upload complete chunks as they form.
+      // Cut complete chunks, persist any not-yet-cut tail, then checkpoint the
+      // cursor. This order guarantees a restart can re-fetch duplicates, but
+      // cannot skip bytes that were only in memory.
+      await _flushPending();
+      await _persistPending();
       await _persistOffset();
-      final cut = await _flushPending();
-      if (cut || (windows % 8) == 0) await _persistPending();
       _emitProgress(fetching: true);
     }
-    await _persistOffset();
     await _persistPending();
+    await _persistOffset();
 
     if (pulled > 0) {
       if (!_events.isClosed) {
@@ -702,9 +759,13 @@ class WrSdSync {
     List<String> files;
     try {
       files = await session.listFiles();
-    } catch (_) {
-      return 0;
+    } catch (e) {
+      if (!_events.isClosed) _events.add('closed-file list error: $e');
+      rethrow;
     }
+    final listed = files.toSet();
+    _closedFileRetryAfter.removeWhere((name, _) => !listed.contains(name));
+    _closedFileFailures.removeWhere((name, _) => !listed.contains(name));
     final prefs = await SharedPreferences.getInstance();
     var totalPulled = 0;
     final now = DateTime.now();
@@ -753,7 +814,6 @@ class WrSdSync {
     }
 
     int pulled = 0;
-    int windows = 0;
     int committed = -1;
     try {
       while (_running && pulled < _maxBytesPerPass) {
@@ -764,7 +824,6 @@ class WrSdSync {
         _pending.add(res.bytes);
         _offset += res.bytes.length;
         pulled += res.bytes.length;
-        windows++;
 
         final now = DateTime.now();
         final dt = now.difference(_rateRefTime).inMilliseconds;
@@ -774,11 +833,9 @@ class WrSdSync {
           _rateRefTime = now;
         }
 
+        await _flushPending();
+        await _persistPending();
         await _persistOffset();
-        final cut = await _flushPending();
-        if (cut || (windows % 8) == 0) {
-          await _persistPending();
-        }
         _emitProgress(fetching: true);
         if (_offset >= committed) {
           break;
@@ -788,8 +845,8 @@ class WrSdSync {
       // Keep already-pulled bytes, then retry this file after a bounded backoff.
       // This avoids both permanent in-session skips and tight BLE retry loops.
       final retryDelay = _markClosedFileRetry(name);
-      await _persistOffset();
       await _persistPending();
+      await _persistOffset();
       if (!_events.isClosed) {
         _events.add(
           'retry $name @$_offset after ${retryDelay.inSeconds}s (read error): $e',
@@ -806,8 +863,8 @@ class WrSdSync {
     // Fully fetched -> flush the final tail and mark done so it's skipped next.
     if (committed >= 0 && _offset >= committed) {
       await _flushPending(force: true);
-      await _persistOffset();
       await _persistPending();
+      await _persistOffset();
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool('wr_sync_done_$name', true);
       _clearClosedFileRetry(name);

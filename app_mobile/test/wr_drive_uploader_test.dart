@@ -370,9 +370,13 @@ void main() {
             q: any(named: 'q'),
             spaces: any(named: 'spaces'),
             $fields: any(named: r'$fields'),
-          )).thenAnswer(
-        (_) async => drive.FileList()..files = [existingFolder],
-      );
+          )).thenAnswer((inv) async {
+        final q = inv.namedArguments[#q] as String? ?? '';
+        if (q.contains("mimeType='application/vnd.google-apps.folder'")) {
+          return drive.FileList()..files = [existingFolder];
+        }
+        return drive.FileList()..files = [];
+      });
 
       var uploadCount = 0;
       when(() => mockFiles.create(
@@ -406,9 +410,13 @@ void main() {
             q: any(named: 'q'),
             spaces: any(named: 'spaces'),
             $fields: any(named: r'$fields'),
-          )).thenAnswer(
-        (_) async => drive.FileList()..files = [existingFolder],
-      );
+          )).thenAnswer((inv) async {
+        final q = inv.namedArguments[#q] as String? ?? '';
+        if (q.contains("mimeType='application/vnd.google-apps.folder'")) {
+          return drive.FileList()..files = [existingFolder];
+        }
+        return drive.FileList()..files = [];
+      });
 
       var uploadAttempts = 0;
       when(() => mockFiles.create(
@@ -438,6 +446,89 @@ void main() {
       expect(id, 'uploaded-after-retry');
       expect(uploadAttempts, 2);
       expect(await uploader.isUploaded(dumpFile), true);
+    });
+
+    test('uses an existing same-size Drive file instead of uploading again',
+        () async {
+      const content = 'already uploaded';
+      final existingFolder = drive.File()..id = 'folder-id';
+      final existingRemote = drive.File()
+        ..id = 'remote-id'
+        ..size = '${content.codeUnits.length}';
+      when(() => mockFiles.list(
+            q: any(named: 'q'),
+            spaces: any(named: 'spaces'),
+            $fields: any(named: r'$fields'),
+          )).thenAnswer((inv) async {
+        final q = inv.namedArguments[#q] as String? ?? '';
+        if (q.contains("mimeType='application/vnd.google-apps.folder'")) {
+          return drive.FileList()..files = [existingFolder];
+        }
+        if (q.contains("'folder-id' in parents") &&
+            q.contains("name='session.opus'")) {
+          return drive.FileList()..files = [existingRemote];
+        }
+        return drive.FileList()..files = [];
+      });
+
+      final dumpFile = await _tempOpusFile(content);
+      final uploader = WrDriveUploader.withApi(mockApi);
+
+      final id = await uploader.uploadIfNew(dumpFile, 'session.opus');
+
+      expect(id, isNull);
+      expect(await uploader.isUploaded(dumpFile), true);
+      verifyNever(() => mockFiles.create(
+            any(),
+            uploadMedia: any(named: 'uploadMedia'),
+          ));
+    });
+
+    test(
+        'replaces an existing different-size Drive file instead of duplicating',
+        () async {
+      const content = 'new content';
+      final existingFolder = drive.File()..id = 'folder-id';
+      final existingRemote = drive.File()
+        ..id = 'remote-id'
+        ..size = '1';
+      when(() => mockFiles.list(
+            q: any(named: 'q'),
+            spaces: any(named: 'spaces'),
+            $fields: any(named: r'$fields'),
+          )).thenAnswer((inv) async {
+        final q = inv.namedArguments[#q] as String? ?? '';
+        if (q.contains("mimeType='application/vnd.google-apps.folder'")) {
+          return drive.FileList()..files = [existingFolder];
+        }
+        if (q.contains("'folder-id' in parents") &&
+            q.contains("name='session.opus'")) {
+          return drive.FileList()..files = [existingRemote];
+        }
+        return drive.FileList()..files = [];
+      });
+      when(() => mockFiles.update(
+            any(),
+            any(),
+            uploadMedia: any(named: 'uploadMedia'),
+          )).thenAnswer((_) async => drive.File()..id = 'remote-id');
+
+      final dumpFile = await _tempOpusFile(content);
+      final uploader = WrDriveUploader.withApi(mockApi);
+
+      final id = await uploader.uploadIfNew(dumpFile, 'session.opus');
+
+      expect(id, 'remote-id');
+      expect(await uploader.isUploaded(dumpFile), true);
+      verify(() => mockFiles.update(
+            any(),
+            'remote-id',
+            uploadMedia: any(named: 'uploadMedia'),
+          )).called(1);
+      verifyNever(() => mockFiles.create(
+            any(),
+            uploadMedia: any(named: 'uploadMedia'),
+          ));
     });
   });
 
