@@ -22,7 +22,7 @@ index 9c9d47e..b49191d 100644
 +CONFIG_OMI_ENABLE_BUTTON=y
 +
  # SD Card Support
- CONFIG_OMI_OFFLINE_STORAGE=y
+ CONFIG_OMI_ENABLE_OFFLINE_STORAGE=y
  CONFIG_DISK_ACCESS=y
 diff --git a/omi/firmware/devkit/src/button.c b/omi/firmware/devkit/src/button.c
 index cf299af..a0b7a98 100644
