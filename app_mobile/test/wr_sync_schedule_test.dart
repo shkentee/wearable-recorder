@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:wearable_recorder/services/wr_sync_schedule.dart';
 
 void main() {
@@ -58,6 +59,46 @@ void main() {
       const schedule = SyncSchedule(mode: SyncMode.manual);
 
       expect(schedule.shouldStart(DateTime(2026, 6, 27, 23, 0)), isFalse);
+    });
+  });
+
+  group('SyncSchedule.load defaults', () {
+    test('defaults to continuous sync for reliability', () async {
+      SharedPreferences.setMockInitialValues({});
+
+      final schedule = await SyncSchedule.load();
+      final prefs = await SharedPreferences.getInstance();
+
+      expect(schedule.mode, SyncMode.continuous);
+      expect(prefs.getInt('wr_sched_mode'), SyncMode.continuous.index);
+    });
+
+    test('migrates legacy daily 23:00 setting to continuous sync once',
+        () async {
+      SharedPreferences.setMockInitialValues({
+        'wr_sched_mode': SyncMode.scheduledTime.index,
+        'wr_sched_time': 23 * 60,
+      });
+
+      final schedule = await SyncSchedule.load();
+      final prefs = await SharedPreferences.getInstance();
+
+      expect(schedule.mode, SyncMode.continuous);
+      expect(prefs.getInt('wr_sched_mode'), SyncMode.continuous.index);
+    });
+
+    test('keeps scheduled mode after the continuous-default migration is done',
+        () async {
+      SharedPreferences.setMockInitialValues({
+        'wr_sched_continuous_default_v2': true,
+        'wr_sched_mode': SyncMode.scheduledTime.index,
+        'wr_sched_time': 23 * 60,
+      });
+
+      final schedule = await SyncSchedule.load();
+
+      expect(schedule.mode, SyncMode.scheduledTime);
+      expect(schedule.timeMinutes, 23 * 60);
     });
   });
 }

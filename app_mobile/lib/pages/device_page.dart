@@ -192,7 +192,7 @@ class _DevicePageState extends State<DevicePage> {
   String _pullModeText() => switch (_schedule.mode) {
         SyncMode.manual => '手動',
         SyncMode.scheduledTime =>
-          'タイマー：毎日 ${SyncSchedule.fmtHm(_schedule.timeMinutes)}',
+          '接続中：毎日 ${SyncSchedule.fmtHm(_schedule.timeMinutes)}',
         SyncMode.intervalWindow =>
           'タイマー：${SyncSchedule.fmtHm(_schedule.windowStartMin)}〜${SyncSchedule.fmtHm(_schedule.windowEndMin)} / ${_schedule.intervalMin}分間隔',
         SyncMode.continuous => '自動：常時',

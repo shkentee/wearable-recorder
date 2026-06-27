@@ -9,7 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 enum SyncMode { continuous, scheduledTime, intervalWindow, manual }
 
 String syncModeLabelJa(SyncMode m) => switch (m) {
-      SyncMode.scheduledTime => '毎日この時刻',
+      SyncMode.scheduledTime => '毎日この時刻（接続中のみ）',
       SyncMode.intervalWindow => '時間帯 × 間隔',
       SyncMode.manual => '手動',
       _ => '常時同期',
@@ -18,7 +18,7 @@ String syncModeLabelJa(SyncMode m) => switch (m) {
 /// User-configured auto-pull schedule, persisted in SharedPreferences.
 class SyncSchedule {
   const SyncSchedule({
-    this.mode = SyncMode.manual,
+    this.mode = SyncMode.continuous,
     this.timeMinutes = 23 * 60, // 23:00
     this.intervalMin = 30,
     this.windowStartMin = 9 * 60, // 09:00
@@ -36,6 +36,7 @@ class SyncSchedule {
   static const _kInterval = 'wr_sched_interval';
   static const _kWinStart = 'wr_sched_winstart';
   static const _kWinEnd = 'wr_sched_winend';
+  static const _kContinuousDefaultMigrated = 'wr_sched_continuous_default_v2';
 
   SyncSchedule copyWith({
     SyncMode? mode,
@@ -54,11 +55,23 @@ class SyncSchedule {
 
   static Future<SyncSchedule> load() async {
     final p = await SharedPreferences.getInstance();
-    final mi = (p.getInt(_kMode) ?? SyncMode.manual.index)
+    final storedMode = p.getInt(_kMode);
+    final time = p.getInt(_kTime) ?? 23 * 60;
+    var mi = (storedMode ?? SyncMode.continuous.index)
         .clamp(0, SyncMode.values.length - 1);
+    final migrated = p.getBool(_kContinuousDefaultMigrated) ?? false;
+    if (!migrated) {
+      final legacyDaily2300 =
+          storedMode == SyncMode.scheduledTime.index && time == 23 * 60;
+      if (storedMode == null || legacyDaily2300) {
+        mi = SyncMode.continuous.index;
+        await p.setInt(_kMode, mi);
+      }
+      await p.setBool(_kContinuousDefaultMigrated, true);
+    }
     return SyncSchedule(
       mode: SyncMode.values[mi],
-      timeMinutes: p.getInt(_kTime) ?? 23 * 60,
+      timeMinutes: time,
       intervalMin: p.getInt(_kInterval) ?? 30,
       windowStartMin: p.getInt(_kWinStart) ?? 9 * 60,
       windowEndMin: p.getInt(_kWinEnd) ?? 18 * 60,
@@ -82,7 +95,7 @@ class SyncSchedule {
 
   /// A one-line human description of the active schedule (for the UI).
   String describeJa() => switch (mode) {
-        SyncMode.scheduledTime => '毎日 ${fmtHm(timeMinutes)} に自動吸出し',
+        SyncMode.scheduledTime => '毎日 ${fmtHm(timeMinutes)} に自動吸出し（アプリ接続中のみ）',
         SyncMode.intervalWindow =>
           '${fmtHm(windowStartMin)}〜${fmtHm(windowEndMin)} に $intervalMin分おきで吸出し',
         SyncMode.manual => '手動（ボタンで吸出し）',
