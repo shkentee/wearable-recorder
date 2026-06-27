@@ -16,10 +16,13 @@
 #include "wr_bs_utils.h"
 
 #include <zephyr/bluetooth/gatt.h>
+#include <errno.h>
 #include <string.h>
 
 #define WR_LINK_BURST_COUNT 5
 #define WR_LINK_BURST_INTERVAL_MS 50
+#define WR_STORAGE_NOTIFY_RETRIES 20
+#define WR_STORAGE_NOTIFY_RETRY_MS 20
 
 DEFINE_FLAG(flag_peer_connected);
 DEFINE_FLAG(flag_notify_sent);
@@ -110,6 +113,27 @@ BT_GATT_SERVICE_DEFINE(storage_svc,
 );
 /* storage_svc.attrs[2] = storageStream value (used with bt_gatt_notify). */
 
+static int storage_notify_with_retry(struct bt_conn *conn,
+				     const void *data, uint16_t len)
+{
+	int err = 0;
+
+	for (int attempt = 0; attempt < WR_STORAGE_NOTIFY_RETRIES; attempt++) {
+		err = bt_gatt_notify(conn, &storage_svc.attrs[2], data, len);
+		if (err == 0) {
+			return 0;
+		}
+
+		if (err != -ENOMEM && err != -EAGAIN) {
+			return err;
+		}
+
+		k_msleep(WR_STORAGE_NOTIFY_RETRY_MS);
+	}
+
+	return err;
+}
+
 static void storage_resp_worker(struct k_work *work)
 {
 	ARG_UNUSED(work);
@@ -131,8 +155,8 @@ static void storage_resp_worker(struct k_work *work)
 			size_t nlen = strlen(files[i]);
 			buf[0] = 0x01; /* FILE_ENTRY */
 			memcpy(&buf[1], files[i], nlen);
-			int err = bt_gatt_notify(conn, &storage_svc.attrs[2],
-						 buf, (uint16_t)(1 + nlen));
+			int err = storage_notify_with_retry(
+				conn, buf, (uint16_t)(1 + nlen));
 			if (err) {
 				FAIL("peripheral: storage LIST notify failed (%d)\n",
 				     err);
@@ -141,7 +165,12 @@ static void storage_resp_worker(struct k_work *work)
 			k_msleep(10);
 		}
 		uint8_t end = 0x03;
-		bt_gatt_notify(conn, &storage_svc.attrs[2], &end, 1);
+		int err = storage_notify_with_retry(conn, &end, 1);
+		if (err) {
+			FAIL("peripheral: storage LIST END notify failed (%d)\n",
+			     err);
+			return;
+		}
 		bs_trace_info_time(1, "peripheral: storage LIST sent (2 entries + END)\n");
 		SET_FLAG(flag_storage_list_handled);
 
@@ -151,15 +180,20 @@ static void storage_resp_worker(struct k_work *work)
 		uint8_t buf[1 + WR_STORAGE_TEST_DATA_LEN];
 		buf[0] = 0x02; /* DATA */
 		memcpy(&buf[1], data, WR_STORAGE_TEST_DATA_LEN);
-		int err = bt_gatt_notify(conn, &storage_svc.attrs[2],
-					 buf, (uint16_t)sizeof(buf));
+		int err = storage_notify_with_retry(
+			conn, buf, (uint16_t)sizeof(buf));
 		if (err) {
 			FAIL("peripheral: storage FETCH notify failed (%d)\n", err);
 			return;
 		}
 		k_msleep(10);
 		uint8_t end = 0x03;
-		bt_gatt_notify(conn, &storage_svc.attrs[2], &end, 1);
+		err = storage_notify_with_retry(conn, &end, 1);
+		if (err) {
+			FAIL("peripheral: storage FETCH END notify failed (%d)\n",
+			     err);
+			return;
+		}
 		bs_trace_info_time(1, "peripheral: storage FETCH sent (data + END)\n");
 		SET_FLAG(flag_storage_fetch_handled);
 	}
