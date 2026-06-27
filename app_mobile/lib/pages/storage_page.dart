@@ -89,9 +89,13 @@ class _StoragePageState extends State<StoragePage> {
     }
   }
 
-  Future<void> _fetchAndUpload(String filename) async {
-    if (_progress.containsKey(filename)) return; // already in progress
+  Future<void> _fetchAndUpload(String filename, {bool retry = false}) async {
+    final current = _progress[filename];
+    if (current != null && !(retry && current.startsWith('エラー:'))) {
+      return;
+    }
 
+    if (!mounted) return;
     setState(() => _progress[filename] = '吸出し中…');
     try {
       // Fetch file from device.
@@ -186,10 +190,7 @@ class _StoragePageState extends State<StoragePage> {
                     ? IconButton(
                         icon: const Icon(Icons.refresh, color: Colors.red),
                         tooltip: '再試行',
-                        onPressed: () {
-                          setState(() => _progress.remove(name));
-                          _fetchAndUpload(name);
-                        },
+                        onPressed: () => _fetchAndUpload(name, retry: true),
                       )
                     : const SizedBox(
                         width: 20,

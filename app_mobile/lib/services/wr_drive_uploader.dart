@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:convert';
 
@@ -9,6 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// SharedPreferences key holding the set of already-uploaded dump identifiers
 /// (`<basename>:<finalSize>`), used to make auto-upload idempotent.
 const _kUploadedKey = 'wr_uploaded_ids';
+const _kMaxUploadedIds = 2000;
 
 /// MIME type used when uploading Opus-in-OGG dump files to Drive.
 const _kOpusMime = 'audio/ogg; codecs=opus';
@@ -478,6 +480,7 @@ class WrDriveUploader {
   // Cache of remote name -> Drive file id, so the omi-style incremental sync
   // updates the same session file in place instead of creating duplicates.
   final Map<String, String> _fileIdByName = {};
+  Future<void> _uploadedIdsTail = Future<void>.value();
 
   /// Creates the Drive file [remoteFileName] if it doesn't exist, or REPLACES
   /// its content if it does. Used by the omi-style sync: one growing file per
@@ -551,33 +554,67 @@ class WrDriveUploader {
   Future<String> _idFor(File f) async =>
       '${f.uri.pathSegments.last}:${await f.length()}';
 
+  Future<T> _withUploadedIdsLock<T>(
+    Future<T> Function(SharedPreferences prefs) action,
+  ) async {
+    final previous = _uploadedIdsTail;
+    final release = Completer<void>();
+    _uploadedIdsTail = release.future;
+
+    try {
+      await previous;
+    } catch (_) {
+      // Keep later ID operations moving even if an earlier upload failed.
+    }
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      return await action(prefs);
+    } finally {
+      if (!release.isCompleted) release.complete();
+    }
+  }
+
+  List<String> _trimUploadedIds(Iterable<String> ids) {
+    final seen = <String>{};
+    final ordered = <String>[];
+    for (final id in ids) {
+      if (id.isEmpty || !seen.add(id)) continue;
+      ordered.add(id);
+    }
+    if (ordered.length <= _kMaxUploadedIds) return ordered;
+    return ordered.sublist(ordered.length - _kMaxUploadedIds);
+  }
+
   /// True if [localFile] (by name + current size) has already been uploaded.
-  Future<bool> isUploaded(File localFile) async {
-    final prefs = await SharedPreferences.getInstance();
-    final set = prefs.getStringList(_kUploadedKey) ?? const <String>[];
-    return set.contains(await _idFor(localFile));
+  Future<bool> isUploaded(File localFile) {
+    return _withUploadedIdsLock((prefs) async {
+      final set = prefs.getStringList(_kUploadedKey) ?? const <String>[];
+      return set.contains(await _idFor(localFile));
+    });
   }
 
   /// True if any file with base name [name] has been uploaded (size-agnostic).
   /// Lets the SD-sync skip re-fetching a completed chunk it already sent.
-  Future<bool> isUploadedByName(String name) async {
-    final prefs = await SharedPreferences.getInstance();
-    final set = prefs.getStringList(_kUploadedKey) ?? const <String>[];
-    return set.any((id) => id.startsWith('$name:'));
+  Future<bool> isUploadedByName(String name) {
+    return _withUploadedIdsLock((prefs) async {
+      final set = prefs.getStringList(_kUploadedKey) ?? const <String>[];
+      return set.any((id) => id.startsWith('$name:'));
+    });
   }
 
   /// Uploads [localFile] only if it hasn't been uploaded before (tracked by
   /// name + final size in SharedPreferences). Returns the Drive file id on a
   /// fresh upload, or null if it was already uploaded.
-  Future<String?> uploadIfNew(File localFile, String remoteFileName) async {
-    final prefs = await SharedPreferences.getInstance();
-    final set = prefs.getStringList(_kUploadedKey) ?? <String>[];
-    final id = await _idFor(localFile);
-    if (set.contains(id)) return null;
-    final fileId = await uploadFile(localFile, remoteFileName);
-    set.add(id);
-    await prefs.setStringList(_kUploadedKey, set);
-    return fileId;
+  Future<String?> uploadIfNew(File localFile, String remoteFileName) {
+    return _withUploadedIdsLock((prefs) async {
+      final set = prefs.getStringList(_kUploadedKey) ?? const <String>[];
+      final id = await _idFor(localFile);
+      if (set.contains(id)) return null;
+      final fileId = await uploadFile(localFile, remoteFileName);
+      await prefs.setStringList(_kUploadedKey, _trimUploadedIds([...set, id]));
+      return fileId;
+    });
   }
 
   /// Uploads every file in [files] that hasn't been uploaded yet. Per-file

@@ -39,9 +39,13 @@ class _ScanPageState extends State<ScanPage> {
     super.initState();
     _sub = _scanner.results.listen(
       (rs) {
+        if (!mounted) return;
         setState(() => _results = rs);
       },
-      onError: (e) => setState(() => _error = e.toString()),
+      onError: (e) {
+        if (!mounted) return;
+        setState(() => _error = e.toString());
+      },
     );
     _startAutoConnectIfNeeded();
   }
@@ -58,38 +62,51 @@ class _ScanPageState extends State<ScanPage> {
   // ---------------------------------------------------------------------------
 
   Future<void> _startAutoConnectIfNeeded() async {
-    final prefs = await SharedPreferences.getInstance();
-    final savedId = prefs.getString(_kLastDeviceId);
-    if (savedId == null || savedId.isEmpty) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final savedId = prefs.getString(_kLastDeviceId);
+      if (savedId == null || savedId.isEmpty) return;
+      if (!mounted) return;
 
-    setState(() {
-      _autoConnectName = savedId; // will be updated once we see the advert name
-    });
+      setState(() {
+        _autoConnectName = savedId;
+      });
 
-    final ok = await _ensurePermissions();
-    if (!ok) {
+      final ok = await _ensurePermissions();
+      if (!mounted) return;
+      if (!ok) {
+        setState(() {
+          _autoConnectName = null;
+          _error = 'Bluetooth/位置情報の権限が必要です';
+        });
+        return;
+      }
+
+      // On some Android/Windows combinations the device is connectable by its
+      // known remoteId even when it does not appear in fresh scan results.
+      // Prefer that path for the previously connected recorder, then leave the
+      // normal scan button as the manual fallback if the device page reports an
+      // error.
+      final device = BluetoothDevice.fromId(savedId);
       setState(() {
         _autoConnectName = null;
-        _error = 'Bluetooth/位置情報の権限が必要です';
       });
-      return;
+      if (!mounted) return;
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => DevicePage(device: WrBleDevice(device)),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = '自動接続に失敗しました: $e';
+      });
+    } finally {
+      if (mounted && _autoConnectName != null) {
+        setState(() => _autoConnectName = null);
+      }
     }
-
-    // On some Android/Windows combinations the device is connectable by its
-    // known remoteId even when it does not appear in fresh scan results.
-    // Prefer that path for the previously connected recorder, then leave the
-    // normal scan button as the manual fallback if the device page reports an
-    // error.
-    final device = BluetoothDevice.fromId(savedId);
-    setState(() {
-      _autoConnectName = null;
-    });
-    if (!mounted) return;
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => DevicePage(device: WrBleDevice(device)),
-      ),
-    );
   }
 
   // ---------------------------------------------------------------------------
@@ -105,6 +122,7 @@ class _ScanPageState extends State<ScanPage> {
 
     setState(() => _error = null);
     final ok = await _ensurePermissions();
+    if (!mounted) return;
     if (!ok) {
       setState(() => _error = 'Bluetooth/位置情報の権限が必要です');
       return;
@@ -112,6 +130,7 @@ class _ScanPageState extends State<ScanPage> {
     try {
       await _scanner.start();
     } catch (e) {
+      if (!mounted) return;
       setState(() => _error = '検索に失敗しました: $e');
       return;
     }

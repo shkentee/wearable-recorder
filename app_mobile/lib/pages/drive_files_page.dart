@@ -19,6 +19,7 @@ class _DriveFilesPageState extends State<DriveFilesPage> {
   List<drive.File> _files = [];
   bool _loading = true;
   String? _error;
+  final Set<String> _deletingIds = {};
 
   @override
   void initState() {
@@ -49,8 +50,11 @@ class _DriveFilesPageState extends State<DriveFilesPage> {
   }
 
   Future<void> _delete(drive.File file) async {
+    final id = file.id;
+    if (id == null || _deletingIds.contains(id)) return;
+    setState(() => _deletingIds.add(id));
     try {
-      await _uploader.deleteFile(file.id!);
+      await _uploader.deleteFile(id);
       if (!mounted) return;
       setState(() => _files.remove(file));
     } catch (e) {
@@ -61,6 +65,10 @@ class _DriveFilesPageState extends State<DriveFilesPage> {
           backgroundColor: Colors.red.shade700,
         ),
       );
+    } finally {
+      if (mounted) {
+        setState(() => _deletingIds.remove(id));
+      }
     }
   }
 
@@ -72,7 +80,7 @@ class _DriveFilesPageState extends State<DriveFilesPage> {
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh),
-            onPressed: _loadFiles,
+            onPressed: _loading ? null : _loadFiles,
             tooltip: '更新',
           ),
         ],
@@ -97,17 +105,24 @@ class _DriveFilesPageState extends State<DriveFilesPage> {
         itemCount: _files.length,
         itemBuilder: (context, i) {
           final file = _files[i];
+          final deleting = file.id != null && _deletingIds.contains(file.id);
           return ListTile(
             leading: const Icon(Icons.audiotrack),
             title: Text(file.name ?? '名称なし'),
             subtitle: file.modifiedTime != null
                 ? Text(file.modifiedTime!.toLocal().toString())
                 : null,
-            trailing: IconButton(
-              icon: const Icon(Icons.delete_outline),
-              onPressed: () => _delete(file),
-              tooltip: '削除',
-            ),
+            trailing: deleting
+                ? const SizedBox(
+                    width: 24,
+                    height: 24,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : IconButton(
+                    icon: const Icon(Icons.delete_outline),
+                    onPressed: () => _delete(file),
+                    tooltip: '削除',
+                  ),
           );
         },
       ),

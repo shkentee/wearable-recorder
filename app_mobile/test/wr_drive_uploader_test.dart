@@ -363,6 +363,43 @@ void main() {
     });
   });
 
+  group('WrDriveUploader.uploadIfNew', () {
+    test('serializes concurrent uploads for the same local file', () async {
+      final existingFolder = drive.File()..id = 'folder-id';
+      when(() => mockFiles.list(
+            q: any(named: 'q'),
+            spaces: any(named: 'spaces'),
+            $fields: any(named: r'$fields'),
+          )).thenAnswer(
+        (_) async => drive.FileList()..files = [existingFolder],
+      );
+
+      var uploadCount = 0;
+      when(() => mockFiles.create(
+            any(),
+            uploadMedia: any(named: 'uploadMedia'),
+          )).thenAnswer((inv) async {
+        final uploadMedia = inv.namedArguments[#uploadMedia];
+        if (uploadMedia == null) return drive.File()..id = 'folder-id';
+        uploadCount++;
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        return drive.File()..id = 'uploaded-$uploadCount';
+      });
+
+      final dumpFile = await _tempOpusFile('same content');
+      final uploader = WrDriveUploader.withApi(mockApi);
+
+      final results = await Future.wait([
+        uploader.uploadIfNew(dumpFile, 'session.opus'),
+        uploader.uploadIfNew(dumpFile, 'session.opus'),
+      ]);
+
+      expect(results.whereType<String>(), ['uploaded-1']);
+      expect(results.where((id) => id == null), hasLength(1));
+      expect(uploadCount, 1);
+    });
+  });
+
   group('WrDriveUploader.listTranscripts', () {
     test('falls back to recordings/transcripts when app folder setting is gone',
         () async {

@@ -14,7 +14,8 @@
  *     [0x01][name...]     FETCH  — stream named file to client
  *     [0xFF]              ABORT  — cancel ongoing transfer
  *
- * Transfers run on the system work queue to avoid blocking the BLE stack.
+ * Transfers run on a dedicated work queue to avoid blocking the BLE stack
+ * or starving unrelated system work while bt_gatt_notify() back-pressures.
  * The active recording file ("a01.txt") is excluded from listings.
  * Completed files are safe to read concurrently with wr_chunk writes
  * because FAT32 allows concurrent read-only opens and we never rename
@@ -29,6 +30,7 @@
 #include <zephyr/bluetooth/gatt.h>
 #include <zephyr/bluetooth/uuid.h>
 #include <zephyr/fs/fs.h>
+#include <zephyr/init.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <stdio.h>
@@ -58,6 +60,21 @@ LOG_MODULE_REGISTER(wr_storage, CONFIG_LOG_DEFAULT_LEVEL);
 #define WR_STORAGE_CHUNK_SIZE    494
 #define WR_STORAGE_NOTIFY_RETRIES 10
 #define WR_STORAGE_RETRY_MS       20
+#define WR_STORAGE_WORKQ_STACK_SIZE 2048
+#define WR_STORAGE_WORKQ_PRIORITY   5
+
+K_THREAD_STACK_DEFINE(wr_storage_workq_stack, WR_STORAGE_WORKQ_STACK_SIZE);
+static struct k_work_q wr_storage_workq;
+
+static int wr_storage_workq_init(void)
+{
+	k_work_queue_start(&wr_storage_workq, wr_storage_workq_stack,
+			   K_THREAD_STACK_SIZEOF(wr_storage_workq_stack),
+			   WR_STORAGE_WORKQ_PRIORITY, NULL);
+	return 0;
+}
+
+SYS_INIT(wr_storage_workq_init, APPLICATION, 90);
 
 /* ------------------------------------------------------------------ */
 /* UUID definitions                                                    */
@@ -262,7 +279,7 @@ static int wr_notify(struct bt_conn *conn, uint8_t type,
 }
 
 /* ------------------------------------------------------------------ */
-/* Work handlers (run on system work queue, not ISR)                  */
+/* Work handlers (run on storage work queue, not ISR)                 */
 /* ------------------------------------------------------------------ */
 
 static void wr_storage_list_fn(struct k_work *work)
@@ -405,7 +422,7 @@ static ssize_t wr_storage_ctrl_write(struct bt_conn *conn,
 			wr_notify(conn, WR_NOTIF_ERROR, NULL, 0);
 			return BT_GATT_ERR(BT_ATT_ERR_UNLIKELY);
 		}
-		k_work_submit(&wr_list_work);
+		k_work_submit_to_queue(&wr_storage_workq, &wr_list_work);
 		break;
 
 	case WR_CMD_FETCH: {
@@ -426,7 +443,7 @@ static ssize_t wr_storage_ctrl_write(struct bt_conn *conn,
 			wr_notify(conn, WR_NOTIF_ERROR, NULL, 0);
 			return BT_GATT_ERR(BT_ATT_ERR_UNLIKELY);
 		}
-		k_work_submit(&wr_fetch_work);
+		k_work_submit_to_queue(&wr_storage_workq, &wr_fetch_work);
 		break;
 	}
 

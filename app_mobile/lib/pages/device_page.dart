@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -67,21 +69,23 @@ class _DevicePageState extends State<DevicePage> {
   String? _syncStatus; // last SD-sync event, shown in the UI
   WrSyncProgress? _syncProg; // live backlog / pull progress, shown in the UI
   WrUploadStatus? _driveStatus; // Drive upload queue state
+  final List<StreamSubscription<dynamic>> _deviceSubs = [];
+  final List<StreamSubscription<dynamic>> _syncSubs = [];
 
   WrDriveUploader get _uploader => widget.uploaderOverride ?? WrDriveUploader();
 
   @override
   void initState() {
     super.initState();
-    widget.device.state.listen((s) {
+    _deviceSubs.add(widget.device.state.listen((s) {
       if (!mounted) return;
       setState(() => _status = s.name);
       if (s == BluetoothConnectionState.disconnected) {
         WrForegroundService.stop().ignore();
         _sdSync?.stop();
       }
-    });
-    widget.device.packetCount.listen((n) {
+    }));
+    _deviceSubs.add(widget.device.packetCount.listen((n) {
       if (!mounted) return;
       setState(() => _packets = n);
       if (n % 100 == 0 && n > 0) {
@@ -89,27 +93,27 @@ class _DevicePageState extends State<DevicePage> {
           '${widget.device.name} · $n packets',
         ).ignore();
       }
-    });
-    widget.device.bytesSaved.listen((n) {
+    }));
+    _deviceSubs.add(widget.device.bytesSaved.listen((n) {
       if (!mounted) return;
       setState(() => _savedBytes = n);
-    });
-    widget.device.lostPackets.listen((n) {
+    }));
+    _deviceSubs.add(widget.device.lostPackets.listen((n) {
       if (!mounted) return;
       setState(() => _lostPackets = n);
-    });
-    widget.device.batteryLevel.listen((pct) {
+    }));
+    _deviceSubs.add(widget.device.batteryLevel.listen((pct) {
       if (!mounted) return;
       setState(() => _batteryPct = pct);
-    });
-    widget.device.audioLevel.listen((lvl) {
+    }));
+    _deviceSubs.add(widget.device.audioLevel.listen((lvl) {
       if (!mounted) return;
       setState(() {
         _level = lvl;
         _levels.add(lvl);
         if (_levels.length > 96) _levels.removeAt(0);
       });
-    });
+    }));
     _init();
   }
 
@@ -152,18 +156,22 @@ class _DevicePageState extends State<DevicePage> {
 
   /// Starts the background SD-pull + Drive-upload coordinator.
   void _startSdSync() {
+    for (final sub in _syncSubs) {
+      sub.cancel().ignore();
+    }
+    _syncSubs.clear();
     _sdSync?.stop();
     _sdSync = null;
     final sync = WrSdSync(device: widget.device, uploader: _uploader);
-    sync.events.listen((msg) {
+    _syncSubs.add(sync.events.listen((msg) {
       if (mounted) setState(() => _syncStatus = msg);
-    });
-    sync.progress.listen((p) {
+    }));
+    _syncSubs.add(sync.progress.listen((p) {
       if (mounted) setState(() => _syncProg = p);
-    });
-    sync.uploadStatus.listen((s) {
+    }));
+    _syncSubs.add(sync.uploadStatus.listen((s) {
       if (mounted) setState(() => _driveStatus = s);
-    });
+    }));
     sync.start();
     _sdSync = sync;
     if (mounted) setState(() {});
@@ -429,9 +437,17 @@ class _DevicePageState extends State<DevicePage> {
 
   @override
   void dispose() {
-    _sdSync?.dispose();
+    for (final sub in _deviceSubs) {
+      sub.cancel().ignore();
+    }
+    _deviceSubs.clear();
+    for (final sub in _syncSubs) {
+      sub.cancel().ignore();
+    }
+    _syncSubs.clear();
+    _sdSync?.dispose().ignore();
     WrForegroundService.stop().ignore();
-    widget.device.dispose();
+    widget.device.dispose().ignore();
     super.dispose();
   }
 

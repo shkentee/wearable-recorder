@@ -78,6 +78,29 @@ void main() {
     expect(find.text('to-delete.opus'), findsNothing);
   });
 
+  testWidgets('double tapping delete only calls deleteFile() once',
+      (tester) async {
+    final file = drive.File()
+      ..id = 'f1'
+      ..name = 'to-delete.opus';
+    final deleteCompleter = Completer<void>();
+    when(() => mockUploader.listFiles()).thenAnswer((_) async => [file]);
+    when(() => mockUploader.deleteFile(any()))
+        .thenAnswer((_) => deleteCompleter.future);
+
+    await tester.pumpWidget(hostedPage());
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byIcon(Icons.delete_outline));
+    await tester.tap(find.byIcon(Icons.delete_outline));
+
+    verify(() => mockUploader.deleteFile('f1')).called(1);
+
+    deleteCompleter.complete();
+    await tester.pumpAndSettle();
+    expect(find.text('to-delete.opus'), findsNothing);
+  });
+
   testWidgets('shows error text when listFiles() throws', (tester) async {
     when(() => mockUploader.listFiles())
         .thenAnswer((_) async => throw Exception('network error'));
