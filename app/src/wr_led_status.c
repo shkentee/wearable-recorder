@@ -38,7 +38,7 @@ extern bool is_connected;
 #define WR_LED_TICK_MS 100
 
 /* Inputs (external setters can plug into these as more signals come online). */
-static volatile bool wr_led_recording = true;       /* always-on for MVP */
+static volatile bool wr_led_recording = true;
 static volatile bool wr_led_charging  = false;
 static volatile bool wr_led_charged   = false;
 static volatile bool wr_led_sd_full   = false;
@@ -50,6 +50,7 @@ void wr_led_status_set_charging(bool on)    { wr_led_charging = on;  wr_led_char
 void wr_led_status_set_charged(bool on)     { wr_led_charged = on;   wr_led_charging = false; }
 void wr_led_status_set_sd_full(bool on)     { wr_led_sd_full = on; }
 void wr_led_status_set_sd_missing(bool on)  { wr_led_sd_missing = on; }
+void wr_led_status_set_recording(bool on)   { wr_led_recording = on; }
 void wr_led_status_set_batt_pct(uint8_t p)  { wr_led_batt_pct = p; }
 
 /* Getter used by wr_battery_service.c to read the last ADC-sampled percent. */
