@@ -72,15 +72,24 @@ class _SettingsPageState extends State<SettingsPage> {
   String _displayFromPrefs({String? storedName, String? storedDisplay}) {
     if (storedDisplay != null &&
         storedDisplay.isNotEmpty &&
-        storedDisplay != _kLegacyDefaultFolder) {
+        !_isLegacyFolderLabel(storedDisplay)) {
       return _stripMyDrivePrefix(storedDisplay);
     }
     if (storedName != null &&
         storedName.isNotEmpty &&
-        storedName != _kLegacyDefaultFolder) {
+        !_isLegacyFolderLabel(storedName)) {
       return storedName;
     }
     return _kDefaultFolderDisplay;
+  }
+
+  bool _isLegacyFolderLabel(String? value) {
+    final v = value?.trim();
+    if (v == null || v.isEmpty) return false;
+    return v == _kLegacyDefaultFolder ||
+        v.endsWith('› $_kLegacyDefaultFolder') ||
+        v.endsWith('/$_kLegacyDefaultFolder') ||
+        v.endsWith('\\$_kLegacyDefaultFolder');
   }
 
   String _stripMyDrivePrefix(String path) {
@@ -97,13 +106,17 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Future<void> _refreshFolderDisplayFromId(SharedPreferences prefs) async {
+    if (_isLegacyFolderLabel(prefs.getString(_kFolderKey)) ||
+        _isLegacyFolderLabel(prefs.getString(_kFolderDisplayKey))) {
+      await _resetToDefaultFolder(prefs);
+      return;
+    }
+
     final folderId = prefs.getString(_kFolderIdKey)?.trim();
     if (folderId == null || folderId.isEmpty) {
       final name = prefs.getString(_kFolderKey)?.trim();
-      if (name == null || name.isEmpty || name == _kLegacyDefaultFolder) {
-        await prefs.setString(_kFolderKey, _kDefaultFolderName);
-        await prefs.setString(_kFolderDisplayKey, _kDefaultFolderDisplay);
-        if (mounted) setState(() => _folderDisplay = _kDefaultFolderDisplay);
+      if (name == null || name.isEmpty || _isLegacyFolderLabel(name)) {
+        await _resetToDefaultFolder(prefs);
       }
       return;
     }
@@ -113,11 +126,23 @@ class _SettingsPageState extends State<SettingsPage> {
         await _uploader.folderDisplayPath(folderId),
       );
       if (display.isEmpty) return;
+      if (_isLegacyFolderLabel(display)) {
+        await _resetToDefaultFolder(prefs);
+        return;
+      }
       await prefs.setString(_kFolderDisplayKey, display);
       if (mounted) setState(() => _folderDisplay = display);
     } catch (_) {
       // Offline / auth unavailable: keep the best local label from prefs.
     }
+  }
+
+  Future<void> _resetToDefaultFolder(SharedPreferences prefs) async {
+    await prefs.setString(_kFolderKey, _kDefaultFolderName);
+    await prefs.remove(_kFolderIdKey);
+    await prefs.setString(_kFolderDisplayKey, _kDefaultFolderDisplay);
+    _uploader.clearFolderCache();
+    if (mounted) setState(() => _folderDisplay = _kDefaultFolderDisplay);
   }
 
   Future<void> _switchAccount() async {
@@ -163,6 +188,7 @@ class _SettingsPageState extends State<SettingsPage> {
     await prefs.setString(_kFolderIdKey, picked.id);
     await prefs.setString(_kFolderKey, picked.name);
     await prefs.setString(_kFolderDisplayKey, picked.displayName);
+    _uploader.clearFolderCache();
     if (mounted) setState(() => _folderDisplay = picked.displayName);
     _snack('アップロード先を「${picked.displayName}」に設定しました');
   }

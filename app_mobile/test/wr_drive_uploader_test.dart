@@ -118,7 +118,7 @@ void main() {
     test('uses existing folder returned by Drive list()', () async {
       final existingFolder = drive.File()
         ..id = 'existing-folder-id'
-        ..name = 'wearable-recordings';
+        ..name = 'recordings';
 
       when(() => mockFiles.list(
             q: any(named: 'q'),
@@ -149,6 +149,59 @@ void main() {
 
       // Folder create must NOT have been called.
       expect(folderCreateCount, 0);
+    });
+
+    test('migrates legacy wearable folder prefs before uploading', () async {
+      SharedPreferences.setMockInitialValues({
+        'wr_drive_folder_id': 'legacy-folder-id',
+        'wr_drive_folder': 'wearable-recordings',
+        'wr_drive_folder_display': 'マイドライブ › wearable-recordings',
+      });
+
+      final queries = <String>[];
+      when(() => mockFiles.list(
+            q: any(named: 'q'),
+            spaces: any(named: 'spaces'),
+            $fields: any(named: r'$fields'),
+          )).thenAnswer((inv) async {
+        final q = inv.namedArguments[#q] as String? ?? '';
+        queries.add(q);
+        if (q.contains("name='recordings'")) {
+          return drive.FileList()
+            ..files = [
+              drive.File()
+                ..id = 'recordings-folder-id'
+                ..name = 'recordings',
+            ];
+        }
+        return drive.FileList()..files = [];
+      });
+
+      drive.File? uploadedMeta;
+      when(() => mockFiles.create(
+            any(),
+            uploadMedia: any(named: 'uploadMedia'),
+          )).thenAnswer((inv) async {
+        final uploadMedia = inv.namedArguments[#uploadMedia];
+        if (uploadMedia == null) return drive.File()..id = 'created-folder';
+        uploadedMeta = inv.positionalArguments.first as drive.File;
+        return drive.File()..id = 'uploaded-file-id';
+      });
+
+      final dumpFile = await _tempOpusFile();
+      final uploader = WrDriveUploader.withApi(mockApi);
+
+      final fileId = await uploader.uploadFile(dumpFile, 'session.opus');
+
+      expect(fileId, 'uploaded-file-id');
+      expect(uploadedMeta?.parents, ['recordings-folder-id']);
+      expect(queries.any((q) => q.contains("name='recordings'")), true);
+      expect(queries.any((q) => q.contains('wearable-recordings')), false);
+
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getString('wr_drive_folder'), 'recordings');
+      expect(prefs.getString('wr_drive_folder_id'), isNull);
+      expect(prefs.getString('wr_drive_folder_display'), 'coai › recordings');
     });
 
     // ------------------------------------------------------------------

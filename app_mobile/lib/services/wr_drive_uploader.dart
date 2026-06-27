@@ -21,6 +21,8 @@ const _kOpusMime = 'audio/ogg; codecs=opus';
 /// The default Drive folder that recordings are stored under (user-overridable
 /// via the [_kFolderKey] preference, set on the Settings page).
 const _kFolderName = 'recordings';
+const _kDefaultFolderDisplay = 'coai › recordings';
+const _kLegacyFolderName = 'wearable-recordings';
 
 /// Project default Drive folder. This matches the PC-side Drive mirror at
 /// `C:\Users\knsol\coai\recordings`.
@@ -34,6 +36,7 @@ const _kFolderKey = 'wr_drive_folder';
 /// set, uploads target this exact folder (picked from the folder chooser),
 /// bypassing name-based lookup.
 const _kFolderIdKey = 'wr_drive_folder_id';
+const _kFolderDisplayKey = 'wr_drive_folder_display';
 
 /// Drive API scope that allows creating / uploading files only.
 const _kDriveScope = drive.DriveApi.driveFileScope;
@@ -140,6 +143,8 @@ class WrDriveUploader {
   // Cache of folder metadata (id -> File) for resolving ancestor paths.
   final Map<String, drive.File> _metaCache = {};
 
+  void clearFolderCache() => _cachedFolderId = null;
+
   /// Signs in (or re-uses an existing session) and returns an authenticated
   /// [drive.DriveApi] instance backed by a [_GoogleAuthClient].
   ///
@@ -165,8 +170,32 @@ class WrDriveUploader {
   /// falling back to [_kFolderName].
   Future<String> folderName() async {
     final prefs = await SharedPreferences.getInstance();
+    await _migrateLegacyFolderPrefs(prefs);
     final n = prefs.getString(_kFolderKey)?.trim();
     return (n == null || n.isEmpty) ? _kFolderName : n;
+  }
+
+  bool _isLegacyFolderLabel(String? value) {
+    final v = value?.trim();
+    if (v == null || v.isEmpty) return false;
+    return v == _kLegacyFolderName ||
+        v.endsWith('› $_kLegacyFolderName') ||
+        v.endsWith('/$_kLegacyFolderName') ||
+        v.endsWith('\\$_kLegacyFolderName');
+  }
+
+  Future<bool> _migrateLegacyFolderPrefs(SharedPreferences prefs) async {
+    final name = prefs.getString(_kFolderKey);
+    final display = prefs.getString(_kFolderDisplayKey);
+    if (!_isLegacyFolderLabel(name) && !_isLegacyFolderLabel(display)) {
+      return false;
+    }
+
+    await prefs.setString(_kFolderKey, _kFolderName);
+    await prefs.setString(_kFolderDisplayKey, _kDefaultFolderDisplay);
+    await prefs.remove(_kFolderIdKey);
+    clearFolderCache();
+    return true;
   }
 
   /// Lists the child folders (id + name) directly under [parentId] — use
@@ -260,6 +289,7 @@ class WrDriveUploader {
   /// hasn't picked one (then we fall back to resolving [folderName] by name).
   Future<String?> _configuredFolderId() async {
     final prefs = await SharedPreferences.getInstance();
+    await _migrateLegacyFolderPrefs(prefs);
     final id = prefs.getString(_kFolderIdKey)?.trim();
     if (id != null && id.isNotEmpty) return id;
     return _useDefaultFolderId ? _kDefaultFolderId : null;
