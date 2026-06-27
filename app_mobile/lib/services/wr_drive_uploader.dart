@@ -479,7 +479,7 @@ class WrDriveUploader {
     return utf8.decode(bytes, allowMalformed: true);
   }
 
-  /// Uploads [localFile] to the "wearable-recordings/" Drive folder.
+  /// Uploads [localFile] to the configured Drive recordings folder.
   ///
   /// [remoteFileName] is the name the file will have on Drive (e.g.
   /// `"session-1234.opus"`). Returns the newly created Drive file ID.

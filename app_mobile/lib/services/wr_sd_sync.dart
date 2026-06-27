@@ -226,8 +226,8 @@ class WrSdSync {
       // Flush the trailing partial chunk so the tail isn't lost.
       if (_name != null) {
         await _flushPending(force: true);
-        await _persistOffset();
         await _persistPending();
+        await _persistOffset();
       }
     } catch (_) {}
     await _session?.close();
@@ -694,8 +694,8 @@ class WrSdSync {
       // resumed later; partial tails are only flushed when a file is finished).
       if (_name != null) {
         await _flushPending();
-        await _persistOffset();
         await _persistPending();
+        await _persistOffset();
       }
       await _loadState(name);
       _rateRefOffset = _offset;
@@ -805,8 +805,8 @@ class WrSdSync {
     if (name != _name) {
       if (_name != null) {
         await _flushPending();
-        await _persistOffset();
         await _persistPending();
+        await _persistOffset();
       }
       await _loadState(name);
       _rateRefOffset = _offset;
